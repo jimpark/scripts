@@ -72,10 +72,14 @@ Deletes local Git branches that no longer exist on a remote — handy after remo
 branches have been merged and deleted (e.g. squash-merged PRs), leaving stale
 local copies behind.
 
-It runs `git fetch --prune`, compares your local branches against the branches
-still present on the remote, lists any that have no remote counterpart, and
-deletes them **only after you confirm** with `y`. The branch you currently have
+It runs `git fetch --prune`, finds local branches that no longer have a
+counterpart on the remote, and — for each one whose work is **already merged
+into the target branch** — deletes it **after you confirm** with `y`. Branches
+that aren't merged yet are listed and kept. The branch you currently have
 checked out is always skipped.
+
+Crucially, "merged" includes **squash- and rebase-merged** branches, not just
+classic merge commits (see [How "merged" is decided](#how-merged-is-decided)).
 
 ### Usage
 
@@ -85,29 +89,60 @@ Run it from inside the repository you want to clean up:
 python prune-branches.py
 ```
 
-You'll see the list of branches to be deleted and a `y/n` prompt; anything other
-than `y` cancels without changing anything.
+You'll see which branches are being kept (unmerged), which will be deleted, and
+a `y/n` prompt; anything other than `y` cancels without changing anything.
 
 | Option | Effect |
 | ------ | ------ |
 | `--remote <name>` | Compare against this remote instead of `origin`. |
-| `--force` | Delete with `git branch -D` (force) instead of the default `-d` (merged-only). |
+| `--into <name>` | Test "is it merged?" against this branch instead of the current one. |
+| `--force` | Delete **every** branch with no remote, merged or not (uses `git branch -D`). |
 | `--yes` | Skip the confirmation prompt (non-interactive; use with care). |
 
 ```sh
+python prune-branches.py --into main
 python prune-branches.py --remote upstream
 python prune-branches.py --force --yes
 ```
 
 Run `python prune-branches.py --help` for the full reference.
 
+### How "merged" is decided
+
+A candidate branch is considered merged into the target (the current branch, or
+`--into <name>`) if **either**:
+
+1. its tip is an ancestor of the target — a normal or fast-forward merge; **or**
+2. `git cherry` finds an equivalent patch already in the target — i.e. the
+   branch's combined diff was applied under a different commit, which is what
+   **squash and rebase merges** produce.
+
+This matters because `git branch -d` only recognizes case (1), so it reports
+squash/rebase-merged branches as *"not fully merged"* even though their changes
+are in `main`. This script handles case (2) as well, so those branches are
+correctly deleted without needing `--force`.
+
 ### Notes & caveats
 
-- By default deletion uses `git branch -d`, which **refuses to delete branches
-  that aren't fully merged** — so it won't discard unmerged work. A branch whose
-  remote was squash- or rebase-merged then deleted looks unmerged locally and
-  will be kept; pass `--force` to delete those (this discards their commits, so
-  review the printed list first).
+- Genuinely unmerged branches are **kept** and listed. Pass `--force` to delete
+  every no-remote branch regardless (this discards unmerged commits, so review
+  the printed list first).
+- The merge check runs against the **current branch** unless you pass `--into`.
+  If you're not on your integration branch (e.g. `main`/`master`), use `--into`
+  so branches aren't wrongly judged unmerged.
+- The check compares against the **local** target branch, which `git fetch`
+  does **not** fast-forward. If the target is behind its upstream the result
+  would be stale, so (unless `--force`) the script **stops with an error and
+  instructions** rather than risk keeping already-merged branches:
+
+  ```
+  Error: 'main' is 3 commit(s) behind 'origin/main', so the merge check would be
+  stale and might keep branches that are in fact merged.
+  Do one of:
+    * compare against the up-to-date remote branch:  --into origin/main
+    * update 'main' first (e.g. 'git pull --ff-only' while it is checked out)
+    * re-run with --force to skip this check
+  ```
 - "Exists on remote" is matched by branch name against `<remote>/*` (the
   `<remote>/HEAD` symref is ignored), so a local branch is kept as long as a
   same-named branch exists on the remote.
