@@ -196,6 +196,7 @@ Reordering is not supported. Save and close to begin cherry-picking.
 | ------ | ------ |
 | `--user <name_or_email>` | Filter by this author instead of your git user. |
 | `--create-branch <name>` | Create and check out `<name>` from `<target_branch>` first. |
+| `--base <ref>` | Override the auto-detected merge-base used to find commits (see the caveat on reverted / `-s ours` merges below). |
 | `--dry-run` | Print the commits that would be backported, then exit. |
 | `--no-edit` | Skip the interactive editor; pick every discovered commit. |
 | `-s`, `--signoff` | Pass `-s` to `git cherry-pick` (adds a `Signed-off-by` trailer). |
@@ -249,6 +250,17 @@ started from.
   squashing, or just delete those lines in the editor.
 - A cherry-pick whose changes are **already present** in the target produces an
   empty commit; those are **auto-skipped** rather than recorded.
+- **Reverted or `-s ours` merges can hide commits — use `--base` to recover.**
+  Discovery starts at the merge-base of source and target. A *merge* from source
+  into target moves that merge-base forward, which is normally correct (the
+  merged commits really are in the target). But if that merge was later
+  **reverted**, or made with **`git merge -s ours`**, the ancestry says "merged"
+  while the actual changes are gone — so the tool reports nothing to backport.
+  It prints a hint when source looks fully merged; pass `--base <fork-point>`
+  (the commit where the branches diverged) to scan from there instead. Commits
+  whose content really is present are still auto-skipped at execution, so you
+  can't double-apply. (Plain cherry-picks do **not** move the merge-base, so
+  they never trigger this.)
 - Without `--create-branch`, your current branch must already contain
   `<target_branch>` in its history, so commits land on the right base.
 - **Requirements:** Python 3.6+ (standard library only) and Git on `PATH`.

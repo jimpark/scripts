@@ -158,8 +158,12 @@ def patch_present_in(target: str, source: str):
 def discover_commits(base: str, target: str, source: str, author: str):
     """Author's not-yet-backported commits (oldest first) and the count skipped.
 
-    Commits whose patch is already in the target (by patch-id) are excluded so
-    a second run doesn't re-pick work that already landed there.
+    Commits whose patch is already in the target (by patch-id, via git cherry)
+    are excluded so a second run doesn't re-pick work that already landed there.
+    The search starts at `base`; pass an overriding --base to look past a
+    merge-base that a reverted or 'merge -s ours' merge has moved forward (in
+    that case git cherry reports nothing present, so the commits resurface and
+    any that *are* present get auto-skipped at execution time).
     """
     present = patch_present_in(target, source)
     commits, excluded = [], 0
@@ -411,12 +415,25 @@ def do_abort(path) -> int:
     return 0
 
 
+def fully_merged_note(args):
+    """Hint shown when source looks fully merged but content may be absent."""
+    if args.base:
+        return None
+    if git("merge-base", "--is-ancestor", args.source, args.target,
+           check=False).returncode != 0:
+        return None
+    return (f"Note: '{args.source}' is already fully merged into "
+            f"'{args.target}'. If that merge was reverted or made with "
+            f"'git merge -s ours', the changes may not actually be present; "
+            f"pass --base <fork-point> to re-scan by patch content.")
+
+
 def print_dry_run(args, base, author, commits, excluded):
     print("DRY RUN - no changes will be made.\n")
     print(f"Source branch  : {args.source}")
     print(f"Target branch  : {args.target}")
     print(f"Author filter  : {author}")
-    print(f"Merge base     : {base[:9]}")
+    print(f"{'Base (--base)' if args.base else 'Merge base   '}  : {base[:9]}")
     if args.create_branch:
         print(f"Branch setup   : would run 'git checkout -b "
               f"{args.create_branch} {args.target}'")
@@ -433,6 +450,9 @@ def print_dry_run(args, base, author, commits, excluded):
     print()
     if not commits:
         print(f"No new commits by '{author}' to backport from {args.source}.")
+        note = fully_merged_note(args)
+        if note:
+            print(note)
         return
     print(f"{len(commits)} commit(s) would be backported (oldest first):")
     for c in commits:
@@ -451,11 +471,22 @@ def start_session(args) -> int:
             err(f"Error: '{ref}' is not a valid branch or revision.")
             return 1
 
-    base = merge_base(args.source, args.target)
-    if base is None:
-        err(f"Error: no common ancestor between '{args.source}' and "
-            f"'{args.target}'.")
-        return 1
+    if args.base:
+        if not ref_exists(args.base):
+            err(f"Error: --base '{args.base}' is not a valid revision.")
+            return 1
+        if git("merge-base", "--is-ancestor", args.base, args.source,
+               check=False).returncode != 0:
+            err(f"Error: --base '{args.base}' is not an ancestor of "
+                f"'{args.source}'.")
+            return 1
+        base = git_out("rev-parse", args.base)
+    else:
+        base = merge_base(args.source, args.target)
+        if base is None:
+            err(f"Error: no common ancestor between '{args.source}' and "
+                f"'{args.target}'.")
+            return 1
 
     author = resolve_author(args.user)
     if not author:
@@ -480,6 +511,9 @@ def start_session(args) -> int:
 
     if not commits:
         print(f"No new commits by '{author}' to backport from '{args.source}'.")
+        note = fully_merged_note(args)
+        if note:
+            print(note)
         return 0
 
     # Branch setup.
@@ -545,6 +579,8 @@ def validate_args(parser, args):
             extras.append("--signoff")
         if args.strategy:
             extras.append("-X")
+        if args.base:
+            extras.append("--base")
         if extras:
             mode = "--continue" if args.cont else "--abort"
             parser.error(f"{mode} cannot be combined with: {', '.join(extras)}")
@@ -573,6 +609,8 @@ def main(argv=None) -> int:
             "  backport.py feature/new-ui main --user jane@example.com\n"
             "  backport.py feature/new-ui main --create-branch backport/ui\n"
             "  backport.py feature/new-ui main -s -X theirs --no-edit\n"
+            "  backport.py feature/new-ui main --base <fork-point>  "
+            "# after a reverted/-s ours merge\n"
             "  backport.py --continue\n"
             "  backport.py --abort\n"
         ),
@@ -587,6 +625,12 @@ def main(argv=None) -> int:
     parser.add_argument("--create-branch", metavar="NAME",
                         help="create and check out NAME from TARGET_BRANCH "
                              "before backporting")
+    parser.add_argument("--base", metavar="REF",
+                        help="override the auto-detected merge-base used to "
+                             "find commits; pass the true fork point if a merge "
+                             "was reverted or made with 'git merge -s ours' "
+                             "(already-present changes are still skipped by "
+                             "patch content)")
     parser.add_argument("--dry-run", action="store_true",
                         help="show the commits that would be backported, then exit")
     parser.add_argument("--no-edit", action="store_true",
