@@ -5,6 +5,7 @@ the one you need and run it. Details for each are below.
 
 | Script | What it does |
 | ------ | ------------ |
+| [`backport.py`](#backportpy) | Cherry-pick one author's commits from a source branch onto a target branch. |
 | [`baseconv.py`](#baseconvpy) | Convert a value between binary, decimal, octal, hex, and base64. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 
@@ -148,4 +149,106 @@ correctly deleted without needing `--force`.
   same-named branch exists on the remote.
 - If a deletion fails, the remaining branches are still processed and the script
   exits with a non-zero status.
+- **Requirements:** Python 3.6+ (standard library only) and Git on `PATH`.
+
+---
+
+## `backport.py`
+
+Cherry-picks a single author's commits from a **source** branch onto a
+**target** branch. It's the tool you reach for when one person's work landed on
+a feature branch and you need just *their* commits replayed onto a release or
+maintenance branch — without dragging along everyone else's.
+
+It discovers the author's commits between the merge-base and the source branch,
+lets you trim the list in your editor (like `git rebase -i`), then cherry-picks
+them oldest-first. Conflicts pause the run so you can resolve and resume.
+
+### Usage
+
+```sh
+python backport.py <source_branch> <target_branch> [options]
+```
+
+By default it backports **your own** commits (from `git config user.email`, or
+`user.name`) onto your current branch, which must already contain
+`<target_branch>`. Use `--create-branch` to start from a fresh branch instead.
+
+```sh
+# your commits from feature/new-ui onto main (current branch must contain main)
+python backport.py feature/new-ui main
+
+# someone else's commits, onto a brand-new branch cut from main
+python backport.py feature/new-ui main --user jane@example.com \
+    --create-branch backport/jane-ui
+
+# see what would happen, change nothing
+python backport.py feature/new-ui main --dry-run
+
+# skip the editor, sign off each commit, prefer their side on conflicts
+python backport.py feature/new-ui main --no-edit -s -X theirs
+```
+
+When the editor opens, **delete the lines** for any commits you don't want.
+Reordering is not supported. Save and close to begin cherry-picking.
+
+| Option | Effect |
+| ------ | ------ |
+| `--user <name_or_email>` | Filter by this author instead of your git user. |
+| `--create-branch <name>` | Create and check out `<name>` from `<target_branch>` first. |
+| `--dry-run` | Print the commits that would be backported, then exit. |
+| `--no-edit` | Skip the interactive editor; pick every discovered commit. |
+| `-s`, `--signoff` | Pass `-s` to `git cherry-pick` (adds a `Signed-off-by` trailer). |
+| `-X <strategy>` | Pass `-X <strategy>` to `git cherry-pick` (e.g. `theirs`, `ours`). |
+
+### Pausing, resuming, aborting
+
+If a cherry-pick conflicts, the run stops and tells you what to do. Resolve the
+conflict (`git add` the fixed files), then:
+
+```sh
+python backport.py --continue   # finish the conflicted commit and carry on
+python backport.py --abort      # rewind everything to where you started
+```
+
+`--continue` will commit the resolution for you (preserving `-s` if you used it),
+or pick up cleanly if you committed it yourself. `--abort` runs
+`git cherry-pick --abort` if needed and `git reset --hard` back to the commit you
+started from.
+
+### How it works
+
+- Commits by the author are found between the merge-base and `<source_branch>`,
+  oldest first, so they apply in their original chronological order.
+- **Already-backported commits are skipped automatically.** Cherry-picking
+  creates a *new* commit with a new SHA, so a naive SHA range would re-propose
+  everything on the next run. Instead, `git cherry` is used to compare by
+  **patch-id** (a hash of the diff), so commits whose changes already exist on
+  the target — even under a different SHA from an earlier backport — are
+  excluded up front and reported (`Excluded N commit(s) already present`).
+- **An audit trail is recorded.** Each cherry-pick is run with `-x`, appending
+  `(cherry picked from commit <sha>)` to the message so you can always trace a
+  backported commit to its origin.
+- Progress is stored in **`.git/.backport`** — a state file with a metadata
+  header (starting commit, branches, author, signoff/strategy flags) and the
+  list of commits. It lives in `.git/`, so it never dirties your working tree.
+  Completed commits are commented out as the run proceeds, so an interrupted
+  backport can resume exactly where it left off (`--continue` reapplies the
+  saved `-x`/`-s`/`-X` options, even for a commit you paused on to resolve).
+
+### Notes & caveats
+
+- The working tree must be **clean** before a new run starts (commit or stash
+  first). `--dry-run` doesn't require this since it changes nothing.
+- **Squash merges are the one case patch-id can't catch.** When a backport PR is
+  *squashed* into the target, several commits collapse into one whose diff
+  matches no individual source commit — so those commits get proposed again. The
+  execution loop still protects you: replaying one produces no changes, so it is
+  **auto-skipped** (and reported) rather than committed. To avoid the noise
+  entirely, merge or rebase backport PRs (preserving commits) instead of
+  squashing, or just delete those lines in the editor.
+- A cherry-pick whose changes are **already present** in the target produces an
+  empty commit; those are **auto-skipped** rather than recorded.
+- Without `--create-branch`, your current branch must already contain
+  `<target_branch>` in its history, so commits land on the right base.
 - **Requirements:** Python 3.6+ (standard library only) and Git on `PATH`.
