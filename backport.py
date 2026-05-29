@@ -107,8 +107,10 @@ def merge_base(a: str, b: str):
 
 
 def working_tree_clean() -> bool:
-    # The state file sits in .git/, so it never shows up here.
-    return git_out("status", "--porcelain") == ""
+    # Only tracked-file changes matter: cherry-pick doesn't touch untracked
+    # files, and 'git reset --hard' (used by --abort) won't remove them, so we
+    # ignore them (-uno). The state file sits in .git/, so it never shows here.
+    return git_out("status", "--porcelain", "--untracked-files=no") == ""
 
 
 def has_unmerged() -> bool:
@@ -503,8 +505,8 @@ def start_session(args) -> int:
         return 0
 
     if not working_tree_clean():
-        err("Error: working tree is not clean. Commit or stash your changes "
-            "first.")
+        err("Error: you have uncommitted changes to tracked files. Commit or "
+            "stash them first (untracked files are fine).")
         return 1
 
     if excluded:
