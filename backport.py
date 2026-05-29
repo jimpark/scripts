@@ -167,7 +167,9 @@ def discover_commits(base: str, target: str, source: str, author: str):
     """
     present = patch_present_in(target, source)
     commits, excluded = [], 0
-    for line in git_lines("log", f"{base}..{source}", f"--author={author}",
+    # -i makes the --author match case-insensitive, so an address that differs
+    # only in capitalisation between tools (Jim@x.com vs jim@x.com) still matches.
+    for line in git_lines("log", f"{base}..{source}", "-i", f"--author={author}",
                           "--reverse", "--format=%H %h %aI %s"):
         full, rest = line.split(" ", 1)  # rest = "<short> <date> <subject>"
         if full in present:
@@ -620,7 +622,7 @@ def main(argv=None) -> int:
     parser.add_argument("target", nargs="?", metavar="TARGET_BRANCH",
                         help="branch (in current HEAD's history) to apply onto")
     parser.add_argument("--user", metavar="NAME_OR_EMAIL",
-                        help="filter commits by this author "
+                        help="filter commits by this author, case-insensitively "
                              "(default: your git user.email or user.name)")
     parser.add_argument("--create-branch", metavar="NAME",
                         help="create and check out NAME from TARGET_BRANCH "
