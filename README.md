@@ -7,6 +7,7 @@ the one you need and run it. Details for each are below.
 | ------ | ------------ |
 | [`backport.py`](#backportpy) | Cherry-pick one author's commits from a source branch onto a target branch. |
 | [`baseconv.py`](#baseconvpy) | Convert a value between binary, decimal, octal, hex, and base64. |
+| [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 
 ---
@@ -64,6 +65,78 @@ Exit status: `0` success · `1` invalid input for the chosen `--from` format ·
 `2` usage error (bad or missing arguments).
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies).
+
+---
+
+## `configure-vscode-bedrock.py`
+
+Configures the **Claude Code VS Code extension** to use models on **AWS
+Bedrock** by writing the right keys into your VS Code `settings.json`.
+
+Before touching anything it checks the AWS CLI, verifies your AWS profile with
+`sts get-caller-identity`, and runs a live `bedrock-runtime invoke-model` call
+against each model you've chosen — so a bad profile, an incomplete Anthropic
+**First Time Use (FTU)** form, or a typo'd inference-profile ID is caught up
+front rather than the next time you open the editor.
+
+The settings file is written **safely**: the existing file is copied to a
+`settings.json.bak` sibling, then the new content is written to a temp file in
+the same directory and **atomically renamed** into place. If anything fails the
+original is left untouched, and you can restore from the backup.
+
+### Usage
+
+```sh
+python configure-vscode-bedrock.py
+```
+
+Any value you don't pass as a flag is **prompted for** (with a default), unless
+you pass `--non-interactive`, in which case the default is used.
+
+```sh
+# fully interactive
+python configure-vscode-bedrock.py
+
+# scripted, picking Opus as the default model
+python configure-vscode-bedrock.py --profile dev --region us-east-1 --default-model opus
+
+# preview the exact settings without writing or calling AWS
+python configure-vscode-bedrock.py --non-interactive --skip-validation --dry-run
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `--profile <name>` | AWS profile to use (default: prompt, then `default`). |
+| `--region <region>` | AWS region (default: `us-east-1`). |
+| `--sonnet` / `--opus` / `--haiku` `<id>` | Inference-profile ID for each model. |
+| `--default-model {sonnet,opus,haiku}` | Which model the extension selects by default. |
+| `--settings-path <path>` | Override the target `settings.json` (handy for testing). |
+| `--skip-validation` | Skip all live AWS calls (profile + Bedrock checks). |
+| `--non-interactive` | Never prompt; use flags and defaults only. |
+| `--dry-run` | Print what would change; write nothing. |
+
+Run `python configure-vscode-bedrock.py --help` for the full reference.
+
+The two keys written are `claudeCode.environmentVariables` (an array of
+`{name, value}` env-var objects, including `CLAUDE_CODE_USE_BEDROCK=1`) and
+`claudeCode.selectedModel`. **Reload the VS Code window afterwards** for the
+changes to take effect.
+
+### Notes & caveats
+
+- **The model IDs are examples and go stale.** List what's actually available
+  to you with
+  `aws bedrock list-inference-profiles --region <REGION> --profile <PROFILE>`,
+  and pass the right ones via `--sonnet` / `--opus` / `--haiku`.
+- **`settings.json` must be plain JSON.** VS Code allows `//` comments, but this
+  script can't preserve them — if it can't parse the file it refuses to write
+  and prints the keys for you to add manually, leaving the file untouched.
+- A backup is written to `settings.json.bak` on every run (overwriting any
+  previous backup). To roll back, copy it over `settings.json`.
+- The live test needs **AWS CLI v2** (it uses `--cli-binary-format`); a warning
+  is printed if a different version is detected.
+- **Requirements:** Python 3.6+ (standard library only) and the AWS CLI on
+  `PATH`.
 
 ---
 
