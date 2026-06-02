@@ -59,7 +59,7 @@ MODEL_CHOICES = ("sonnet", "opus", "haiku")
 # Example defaults only — verify against `aws bedrock list-inference-profiles`.
 DEFAULT_REGION = "us-east-1"
 DEFAULT_SONNET = "global.anthropic.claude-sonnet-4-6"
-DEFAULT_OPUS = "global.anthropic.claude-opus-4-6-v1"
+DEFAULT_OPUS = "global.anthropic.claude-opus-4-8"
 DEFAULT_HAIKU = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
