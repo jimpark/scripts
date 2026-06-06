@@ -8,6 +8,7 @@ the one you need and run it. Details for each are below.
 | [`backport.py`](#backportpy) | Cherry-pick one author's commits from a source branch onto a target branch. |
 | [`baseconv.py`](#baseconvpy) | Convert a value between binary, decimal, octal, hex, and base64. |
 | [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
+| [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 
 ---
@@ -137,6 +138,55 @@ changes to take effect.
   is printed if a different version is detected.
 - **Requirements:** Python 3.6+ (standard library only) and the AWS CLI on
   `PATH`.
+
+---
+
+## `html-info.py`
+
+Prints useful basic information about an **HTML**, **XML**, or **XHTML**
+document by inspecting its opening declarations, root element, and common
+metadata in the `<head>`.
+
+It reports things that are usually quick to spot near the top of the file, such
+as the **doctype**, **XML declaration**, **root tag**, **language**,
+**text direction**, **declared / inferred encoding**, **title**, and common
+`<meta>` values like **description**, **author**, **viewport**, and
+**generator**. It also reports the canonical URL, namespaces, a **SHA-256**
+checksum of the raw input bytes, whether `<head>` and `<body>` were found, and
+a few simple tag counts.
+
+### Usage
+
+```sh
+python html-info.py [--format {human,json}] [FILE]
+```
+
+- Pass `FILE` to inspect a file on disk, or omit it to **read bytes from stdin**.
+- `--format human` prints readable key/value lines.
+- `--format json` prints structured JSON for scripting.
+- Run `python html-info.py --help` for the full reference.
+
+```sh
+# inspect a normal HTML file
+python html-info.py index.html
+
+# machine-readable output
+python html-info.py --format json page.xhtml
+
+# inspect XML from stdin
+cat feed.xml | python html-info.py
+```
+
+### Notes & caveats
+
+- The encoding is **sniffed** from a BOM, XML declaration, or `<meta charset>`
+  / Content-Type meta tag; if none is present, UTF-8 is assumed.
+- The **mobile-friendly hint** is just that: a hint. It looks for a viewport
+  meta tag such as `width=device-width` or `initial-scale=...`; it is not a full
+  responsive-design audit.
+- HTML is parsed leniently enough for common real-world files, while XML/XHTML
+  declarations and namespaces are still surfaced when present.
+- **Requirements:** Python 3.6+ (standard library only; no dependencies).
 
 ---
 
