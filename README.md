@@ -11,6 +11,7 @@ the one you need and run it. Details for each are below.
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
+| [`unicode-info.py`](#unicode-infopy) | Fetch and display Unicode character information for a codepoint. |
 
 ---
 
@@ -466,3 +467,51 @@ that are **(running)**, and stars the **★** top pick per category.
   [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) on
   `PATH`, plus `uv` (or just run the `.py` with Python 3.6+; standard library
   only).
+
+---
+
+## `unicode-info.py`
+
+Fetches a single codepoint's page from **unicodeplus.com**, parses its property
+tables, and prints them grouped into readable sections.
+
+It reports the **name**, **codepoint**, **Unicode version**, **block**, and
+**plane**; the **bidirectional class**, **mirroring**, and **case mappings**;
+the **category**, **script**, and **combining class**; and a full set of
+**encodings and escape sequences** — UTF-8/16/32, HTML, URL, and the literal
+forms used by CSS, JavaScript, JSON, C/C++, Java, Python, Rust, and Ruby. Any
+properties the page exposes that don't fall into those groups are listed under
+*Other Properties*.
+
+### Usage
+
+```sh
+python unicode-info.py <codepoint>
+```
+
+The codepoint may be written as `U+<hex>` or `<hex>h`:
+
+```sh
+python unicode-info.py U+0041     # LATIN CAPITAL LETTER A
+python unicode-info.py 1F600h     # GRINNING FACE
+python unicode-info.py u+00e9     # case-insensitive
+```
+
+Run `python unicode-info.py --help` for the full reference.
+
+### Notes & caveats
+
+- **It scrapes a third-party web page**, so it needs network access and will
+  break if unicodeplus.com changes its markup. If the page can't be parsed the
+  script says so and points you at the URL to check manually.
+- Output is **colorized** (bold labels, cyan section rules) when stdout is a
+  terminal; set `NO_COLOR` to disable it, or redirect to a file for plain text.
+- The script forces **UTF-8 output**, so the rendered glyph and the box-drawing
+  rules display correctly even on Windows consoles that default to a legacy
+  code page. Whether a given glyph actually shows depends on your terminal font.
+
+Exit status: `0` success · `1` network error or the page could not be parsed ·
+`2` usage error (bad or missing arguments).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies) and
+network access.
