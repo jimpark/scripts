@@ -13,6 +13,8 @@ the one you need and run it. Details for each are below.
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`unicode-info.py`](#unicode-infopy) | Fetch and display Unicode character information for a codepoint. |
 
+**macOS:** Each script has a matching bash wrapper with the same base name (e.g. `backport`, `baseconv`). Add the `scripts/` folder to your `PATH` and invoke any script by its bare name — no `python` prefix, no directory qualifier needed.
+
 ---
 
 ## `baseconv.py`
@@ -33,6 +35,12 @@ decode the input (`--from`) into bytes → re-encode as the output (`--to`).
 | `base64` | Standard RFC 4648 base64                             | `aGk=`             |
 
 ### Usage
+
+```sh
+baseconv --from <FORMAT> --to <FORMAT> [VALUE]
+```
+
+or invoke the script directly:
 
 ```
 python baseconv.py --from <FORMAT> --to <FORMAT> [VALUE]
@@ -88,6 +96,12 @@ the same directory and **atomically renamed** into place. If anything fails the
 original is left untouched, and you can restore from the backup.
 
 ### Usage
+
+```sh
+configure-vscode-bedrock
+```
+
+or invoke the script directly:
 
 ```sh
 python configure-vscode-bedrock.py
@@ -160,6 +174,12 @@ a few simple tag counts.
 ### Usage
 
 ```sh
+html-info [--format {human,json}] [FILE]
+```
+
+or invoke the script directly:
+
+```sh
 python html-info.py [--format {human,json}] [FILE]
 ```
 
@@ -210,6 +230,12 @@ classic merge commits (see [How "merged" is decided](#how-merged-is-decided)).
 ### Usage
 
 Run it from inside the repository you want to clean up:
+
+```sh
+prune-branches
+```
+
+or invoke the script directly:
 
 ```sh
 python prune-branches.py
@@ -290,6 +316,12 @@ lets you trim the list in your editor (like `git rebase -i`), then cherry-picks
 them oldest-first. Conflicts pause the run so you can resolve and resume.
 
 ### Usage
+
+```sh
+backport <source_branch> <target_branch> [options]
+```
+
+or invoke the script directly:
 
 ```sh
 python backport.py <source_branch> <target_branch> [options]
@@ -415,16 +447,11 @@ It does the heavy lifting of picking a model your Mac can actually run:
 
 ### Usage
 
-A small bash wrapper, [`rapid-mlx-copilot`](#rapid-mlx-copilotpy), runs the
-script via `uv` from any directory (the macOS counterpart to the `.cmd`
-wrappers; no Windows wrapper since this is Mac-only). Put the `scripts/` folder
-on your `PATH` and just run:
-
 ```sh
 rapid-mlx-copilot                 # pick a model, then launch Copilot
 ```
 
-or invoke the script directly:
+or invoke the script directly (no Windows `.cmd` wrapper — this script is Mac-only):
 
 ```sh
 uv run rapid-mlx-copilot.py [options] [-- copilot args…]
@@ -484,6 +511,12 @@ properties the page exposes that don't fall into those groups are listed under
 *Other Properties*.
 
 ### Usage
+
+```sh
+unicode-info <codepoint>
+```
+
+or invoke the script directly:
 
 ```sh
 python unicode-info.py <codepoint>
