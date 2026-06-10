@@ -10,6 +10,7 @@ the one you need and run it. Details for each are below.
 | [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
+| [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 
 ---
 
@@ -387,3 +388,81 @@ started from.
 - Without `--create-branch`, your current branch must already contain
   `<target_branch>` in its history, so commits land on the right base.
 - **Requirements:** Python 3.6+ (standard library only) and Git on `PATH`.
+
+---
+
+## `rapid-mlx-copilot.py`
+
+An interactive launcher (macOS / Apple Silicon) that runs the **GitHub Copilot
+CLI** against a **local [rapid-mlx](https://github.com/raullenchai/Rapid-MLX)
+model server** instead
+of a cloud provider — so Copilot runs fully offline on your own machine.
+
+It does the heavy lifting of picking a model your Mac can actually run:
+
+1. Reads this machine's RAM and chip.
+2. Lists rapid-mlx model aliases, estimates each one's memory working set using
+   an [LLM-Calc](https://github.com/RayFernando1337/LLM-Calc)-style estimate
+   (weights + KV-cache for the configured context + OS overhead), and shows
+   **only the models that fit in this machine's RAM**.
+3. Tags the recommended pick for **`[general]`**, **`[planning]`**, and
+   **`[coding]`** use.
+4. Lets you pick one. If it's already serving, it's reused; if a *different*
+   model is serving, that server is stopped and the chosen one is started.
+   Models that aren't downloaded yet are pulled on demand.
+5. Configures the Copilot CLI to talk to the local server and launches it.
+
+### Usage
+
+A small bash wrapper, [`rapid-mlx-copilot`](#rapid-mlx-copilotpy), runs the
+script via `uv` from any directory (the macOS counterpart to the `.cmd`
+wrappers; no Windows wrapper since this is Mac-only). Put the `scripts/` folder
+on your `PATH` and just run:
+
+```sh
+rapid-mlx-copilot                 # pick a model, then launch Copilot
+```
+
+or invoke the script directly:
+
+```sh
+uv run rapid-mlx-copilot.py [options] [-- copilot args…]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `-s`, `--serve-only` | Start/reuse the chosen model and wait — don't launch Copilot (attach from another terminal). |
+| `--context <N>` | Context length used to size the KV cache in the RAM estimate (e.g. `16384` or `16k`). Default: `16384`. |
+| `--budget <X>` | Cap usable RAM for the "runnable" filter: a number in GB (e.g. `24`) or a percentage of total (e.g. `80%`). Default: all of this machine's RAM. |
+| `-h`, `--help` | Show help. |
+
+Any other arguments (or anything after `--`) are forwarded to `copilot`.
+
+```sh
+# size the runnable filter for a longer context and a conservative RAM budget
+rapid-mlx-copilot --context 32k --budget 80%
+
+# just start/keep a model serving and attach Copilot from elsewhere later
+rapid-mlx-copilot --serve-only
+```
+
+The menu marks each model as **●** downloaded or **○** will-download, flags any
+that are **(running)**, and stars the **★** top pick per category.
+
+### Notes & caveats
+
+- **The "can this machine run it" filter is an estimate, not a guarantee.** It
+  compares `weights + KV-cache(context) + OS overhead` against total RAM. Lower
+  `--context` (or the in-file `OS_OVERHEAD_GB`) to be more conservative; raise
+  `--context` to size the KV cache for longer conversations.
+- The server is **left running** after Copilot exits (warm cache); the script
+  prints the `kill <pid>` to stop it. The recommendation lists, port, and other
+  tunables are constants near the top of the script — edit to taste.
+- The **first** Copilot question may take ~1–2 min while the model prefills
+  Copilot's large prompt; it's a one-time cost and cached afterwards.
+- Server output is logged to **`rapid_mlx.log`** in the current directory.
+- **Requirements:** macOS with
+  [`rapid-mlx`](https://github.com/raullenchai/Rapid-MLX) and the
+  [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) on
+  `PATH`, plus `uv` (or just run the `.py` with Python 3.6+; standard library
+  only).
