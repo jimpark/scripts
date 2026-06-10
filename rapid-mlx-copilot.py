@@ -255,6 +255,59 @@ def start_server(model, tools_parser):
     die("server did not become ready in time — check the log.")
 
 
+def stop_one(srv):
+    print(c(f"Stopping {srv['model']} (pid {srv['pid']}, port {srv['port']})…",
+            YELLOW))
+    stop_server(srv["pid"])
+    if any(s["pid"] == srv["pid"] for s in running_servers()):
+        print(c(f"  pid {srv['pid']} did not exit — escalating to SIGKILL.", RED))
+        try:
+            os.kill(srv["pid"], signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    print(c(f"  stopped {srv['model']}.", GREEN))
+
+
+def select_servers_to_stop(running, target):
+    """Resolve a --stop target to a list of running servers, or prompt for one.
+
+    target may be None (interactive), "all", a model alias, a PID, or a port.
+    """
+    if target is None:
+        print(c("\n  Running rapid-mlx servers:", BOLD))
+        for i, s in enumerate(running, 1):
+            print(f"  {i:>2}  {s['model']:<26} pid {s['pid']:<7} port {s['port']}")
+        print(f"  {'a':>2}  stop ALL of the above")
+        choice = input(c("\nPick a server to stop (#, a for all, q to quit): ",
+                         BOLD)).strip().lower()
+        if choice in ("q", "quit", "exit", ""):
+            return []
+        if choice in ("a", "all"):
+            return running
+        if choice.isdigit() and 1 <= int(choice) <= len(running):
+            return [running[int(choice) - 1]]
+        die("invalid selection.")
+
+    if target.lower() == "all":
+        return running
+    matches = [s for s in running
+               if target == s["model"]
+               or (target.isdigit() and int(target) in (s["pid"], s["port"]))]
+    if not matches:
+        die(f"no running server matches {target!r} "
+            f"(by model alias, pid, or port).")
+    return matches
+
+
+def do_stop(target):
+    running = running_servers()
+    if not running:
+        print(c("No rapid-mlx servers are running.", DIM))
+        return
+    for srv in select_servers_to_stop(running, target):
+        stop_one(srv)
+
+
 def ensure_downloaded(alias, cached):
     if alias in cached:
         return
@@ -314,6 +367,9 @@ usage: rapid-mlx-copilot.py [options] [-- copilot args…]
 
   -s, --serve-only     Start/reuse the chosen model and wait, do not launch
                        Copilot (attach from another terminal).
+      --stop [TARGET]  Stop running rapid-mlx server(s) and exit. TARGET is an
+                       optional model alias, PID, port, or "all"; with no TARGET
+                       you pick one interactively. Stops nothing else.
       --context N      Context length used to size the KV cache in the RAM
                        estimate (accepts e.g. 16384 or 16k). Default: %d.
       --budget X       Cap usable RAM for the "runnable" filter: a number in
@@ -348,6 +404,8 @@ def main():
     total = total_ram_gib()
     budget = total
     serve_only = False
+    stop_requested = False
+    stop_target = None
     copilot_args = []
 
     argv = sys.argv[1:]
@@ -356,6 +414,13 @@ def main():
         a = argv[i]
         if a in ("--serve-only", "-s"):
             serve_only = True
+        elif a == "--stop" or a.startswith("--stop="):
+            stop_requested = True
+            if "=" in a:
+                stop_target = a.split("=", 1)[1]
+            elif i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                stop_target = argv[i + 1]
+                i += 1
         elif a in ("-h", "--help"):
             print(USAGE % CONTEXT_TOKENS)
             return
@@ -374,10 +439,15 @@ def main():
             copilot_args.append(a)
         i += 1
 
-    needed = ("rapid-mlx",) if serve_only else ("rapid-mlx", "copilot")
+    needed = ("rapid-mlx",) if (serve_only or stop_requested) \
+        else ("rapid-mlx", "copilot")
     for tool in needed:
         if not shutil.which(tool):
             die(f"'{tool}' not found on PATH.")
+
+    if stop_requested:
+        do_stop(stop_target)
+        return
 
     models = list_model_aliases()
     if not models:

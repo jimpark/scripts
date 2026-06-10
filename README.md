@@ -460,6 +460,7 @@ uv run rapid-mlx-copilot.py [options] [-- copilot args…]
 | Option | Effect |
 | ------ | ------ |
 | `-s`, `--serve-only` | Start/reuse the chosen model and wait — don't launch Copilot (attach from another terminal). |
+| `--stop [TARGET]` | Stop running rapid-mlx server(s) and exit. `TARGET` is an optional model alias, PID, port, or `all`; with no `TARGET` you pick one interactively. |
 | `--context <N>` | Context length used to size the KV cache in the RAM estimate (e.g. `16384` or `16k`). Default: `16384`. |
 | `--budget <X>` | Cap usable RAM for the "runnable" filter: a number in GB (e.g. `24`) or a percentage of total (e.g. `80%`). Default: all of this machine's RAM. |
 | `-h`, `--help` | Show help. |
@@ -472,6 +473,10 @@ rapid-mlx-copilot --context 32k --budget 80%
 
 # just start/keep a model serving and attach Copilot from elsewhere later
 rapid-mlx-copilot --serve-only
+
+# stop running model server(s): interactively, or by alias/port/all
+rapid-mlx-copilot --stop
+rapid-mlx-copilot --stop all
 ```
 
 The menu marks each model as **●** downloaded or **○** will-download, flags any
