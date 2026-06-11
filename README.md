@@ -11,6 +11,7 @@ the one you need and run it. Details for each are below.
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
+| [`unicode-clipboard.py`](#unicode-clipboardpy) | Copy Unicode characters to the clipboard by codepoint, so you can paste the untypeable. |
 | [`unicode-info.py`](#unicode-infopy) | Fetch and display Unicode character information for a codepoint. |
 
 **macOS:** Each script has a matching bash wrapper with the same base name (e.g. `backport`, `baseconv`). Add the `scripts/` folder to your `PATH` and invoke any script by its bare name — no `python` prefix, no directory qualifier needed.
@@ -499,6 +500,117 @@ that are **(running)**, and stars the **★** top pick per category.
   [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) on
   `PATH`, plus `uv` (or just run the `.py` with Python 3.6+; standard library
   only).
+
+---
+
+## `unicode-clipboard.py`
+
+Builds a string from one or more Unicode **codepoints** and places it on the
+**system clipboard**, so you can paste characters you can't type — emoji,
+symbols, accented letters, zero-width marks — into any program that pastes from
+the clipboard. Works on **macOS**, **Windows**, and **Linux**.
+
+Each codepoint may be written in any of these case-insensitive forms:
+
+| Form        | Example        | Notes                     |
+| ----------- | -------------- | ------------------------- |
+| `U+<hex>`   | `U+1F600`      |                           |
+| `<hex>h`    | `1F600h`       |                           |
+| `0x<hex>`   | `0x1F600`      |                           |
+| `\u<hex>`   | `\u00e9`     | 4 hex digits              |
+| `\U<hex>`   | `\U0001F600`   | 8 hex digits              |
+| `&#<dec>;`  | `&#233;`       | HTML decimal entity       |
+| `&#x<hex>;` | `&#xE9;`       | HTML hex entity           |
+
+Multiple codepoints are concatenated, in order, into a single string.
+
+### Two ways to specify the characters
+
+**Codepoint mode (default).** Pass one or more codepoints as separate arguments
+(the table above), and they're concatenated into the string to copy.
+
+**String mode (`--string` / `-s`).** Pass a whole string whose embedded escapes
+are decoded like a **Python or C/C++ string literal**, then copied. So
+`-s "Hello\u002c World\u0021"` copies `Hello, World!`. Recognised escapes:
+
+| Escape       | Meaning                                  |
+| ------------ | ---------------------------------------- |
+| `\uXXXX`     | Unicode codepoint, exactly 4 hex digits  |
+| `\UXXXXXXXX` | Unicode codepoint, exactly 8 hex digits  |
+| `\N{NAME}`   | by Unicode name, e.g. `\N{BULLET}` (also named sequences) |
+| `\xH...`     | hex escape, one or more hex digits       |
+| `\ooo`       | octal escape, 1–3 octal digits           |
+| `\a \b \f \n \r \t \v` | bell, backspace, form-feed, newline, carriage-return, tab, vertical-tab |
+| `\\ \' \" \?` | literal backslash, quote, double-quote, question mark |
+
+Anything that isn't an escape is taken literally; an unrecognised escape (or a
+dangling backslash) is an error.
+
+In **either** mode, if the value is omitted the input is read from **stdin** —
+codepoint mode splits stdin on whitespace, string mode reads it whole (minus a
+single trailing newline).
+
+### Usage
+
+```sh
+unicode-clipboard <codepoint> [<codepoint> ...]
+```
+
+or invoke the script directly:
+
+```sh
+python unicode-clipboard.py <codepoint> [<codepoint> ...]
+```
+
+- Pass one or more codepoints as arguments, or **omit them to read from stdin**
+  (whitespace-separated), so you can pipe a list in.
+- A confirmation summary is printed unless you pass `-q` / `--quiet`.
+- Run `python unicode-clipboard.py --help` for the full reference.
+
+```sh
+# copy a single grinning-face emoji
+python unicode-clipboard.py U+1F600
+
+# copy "Hi" (codepoints are concatenated in order)
+python unicode-clipboard.py U+0048 U+0069
+
+# mix forms; copy é, a snowman, and the letter A
+python unicode-clipboard.py 00e9h 0x2603 U+0041
+
+# read a list from stdin, quietly
+echo 'U+2603 U+FE0F' | python unicode-clipboard.py -q
+
+# string mode: decode embedded escapes, then copy "Hello, World!"
+python unicode-clipboard.py -s 'Hello\u002c World\u0021'
+
+# string mode mixing literal text, a tab, and an astral (emoji) escape
+python unicode-clipboard.py -s 'tab\there \U0001F389'
+
+# string mode using Unicode names
+python unicode-clipboard.py -s 'caution \N{SNOWMAN} ahead'
+
+# string mode reading the string from stdin (trailing newline is dropped)
+echo 'café' | python unicode-clipboard.py -s
+```
+
+### Notes & caveats
+
+- **Clipboard backends (no third-party dependencies):** macOS uses `pbcopy`;
+  Windows uses the Win32 clipboard API via `ctypes` (full Unicode — unlike the
+  built-in `clip.exe`, which mangles non-ASCII to the console code page); Linux
+  uses `wl-copy` (Wayland) or `xclip` / `xsel` (X11), whichever is found. On
+  Linux, if none of those tools is installed the script says so and tells you
+  what to install.
+- **UTF-16 surrogates** (`U+D800`–`U+DFFF`) and codepoints above `U+10FFFF` are
+  rejected — they aren't valid characters.
+- Whether a pasted glyph actually *renders* depends on the destination program's
+  font; the bytes on the clipboard are correct regardless.
+
+Exit status: `0` success · `1` no usable clipboard backend, or the copy failed ·
+`2` usage error (bad or missing arguments).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies). On Linux,
+one of `wl-copy`, `xclip`, or `xsel` on `PATH`.
 
 ---
 
