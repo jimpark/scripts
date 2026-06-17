@@ -12,6 +12,7 @@ the one you need and run it. Details for each are below.
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
+| [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
 | [`unicode-clipboard.py`](#unicode-clipboardpy) | Copy Unicode characters to the clipboard by codepoint, so you can paste the untypeable. |
 | [`unicode-info.py`](#unicode-infopy) | Fetch and display Unicode character information for a codepoint. |
 
@@ -747,3 +748,71 @@ Exit status: `0` success · `1` network error or the page could not be parsed ·
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies) and
 network access.
+
+---
+
+## `rtf-runs.py`
+
+Segments the body text of an **RTF** document into **runs** — maximal
+stretches of text whose language and character set stay constant — and
+reports, for each run, the Western/Latin proofing language, the East-Asian
+(Far East) proofing language, the active font, and the character set /
+codepage used to decode it.
+
+By default a new run starts on any change to `\lang`, `\langfe`, or `\f`
+(and therefore `\fcharset`). Bytes written as `\'xx` escapes are decoded
+using the codepage implied by the active font's `\fcharset` (falling back to
+the document's `\ansicpg`); `\uN` Unicode escapes are decoded directly and
+their `\ucN` fallback bytes are skipped.
+
+### Usage
+
+```sh
+rtf-runs FILE.rtf [options]
+```
+
+or invoke the script directly:
+
+```sh
+python rtf-runs.py FILE.rtf [options]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `--json` | Emit JSON Lines (one JSON object per run) instead of a human-readable table. |
+| `--min-len <N>` | Drop runs whose stripped text is shorter than `N` (e.g. `1` to drop whitespace-only runs). |
+| `--break-on <fields>` | Comma list of fields that start a new run: `lang`, `langfe`, `font`, `charset` (default: `lang,langfe,font`). |
+
+```sh
+# human-readable table
+python rtf-runs.py document.rtf
+
+# one JSON object per run, for scripting
+python rtf-runs.py document.rtf --json
+
+# drop whitespace-only runs
+python rtf-runs.py document.rtf --min-len 1
+
+# also break runs on a raw \fcharset change, not just font number
+python rtf-runs.py document.rtf --break-on lang,langfe,font,charset
+```
+
+Run `python rtf-runs.py --help` for the full reference.
+
+### Notes & caveats
+
+- **Per-slot fonts aren't modeled separately.** RTF keeps three font "slots"
+  active at once (`\loch` low-ANSI, `\hich` high-ANSI, `\dbch` double-byte).
+  This tool tracks only the single current font set by `\f`, which is what
+  `\hich`/`\loch` text usually resolves to in Word output. For the common
+  case (Latin + one CJK font) the reported charset is correct; deeply mixed
+  slots may need slot-aware decoding.
+- Header destinations (`fonttbl`, `colortbl`, `stylesheet`, `info`, and any
+  `{\* ...}` ignorable destination) are parsed but not emitted as runs.
+- The LCID-to-language-name table covers a useful subset, not every Windows
+  LCID; unrecognised codes are reported as `LCID <n>`.
+
+Exit status: `0` success · `1` the file could not be read ·
+`2` usage error (bad or missing arguments).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies).
