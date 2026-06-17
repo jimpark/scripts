@@ -7,6 +7,7 @@ the one you need and run it. Details for each are below.
 | ------ | ------------ |
 | [`backport.py`](#backportpy) | Cherry-pick one author's commits from a source branch onto a target branch. |
 | [`baseconv.py`](#baseconvpy) | Convert a value between binary, decimal, octal, hex, and base64. |
+| [`bedrock-copilot.py`](#bedrock-copilotpy) | Launch the GitHub Copilot CLI against a model on AWS Bedrock, with model + effort pickers. |
 | [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
@@ -500,6 +501,87 @@ that are **(running)**, and stars the **★** top pick per category.
   [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) on
   `PATH`, plus `uv` (or just run the `.py` with Python 3.6+; standard library
   only).
+
+---
+
+## `bedrock-copilot.py`
+
+An interactive launcher that runs the **GitHub Copilot CLI** against a model on
+**AWS Bedrock**. It stands up a local
+[LiteLLM](https://github.com/BerriAI/litellm) proxy that presents Bedrock as an
+OpenAI-compatible endpoint, points Copilot's "bring your own key" (BYOK)
+settings at it, and tears the proxy down when Copilot exits.
+
+```
+Copilot CLI ──BYOK──▶ LiteLLM proxy (localhost) ──boto3──▶ AWS Bedrock
+```
+
+What it does:
+
+1. Resolves AWS credentials **without hardcoding them** — from an AWS profile /
+   SSO, 1Password, the ambient environment, or a hidden prompt — and validates
+   them with `sts get-caller-identity`.
+2. Discovers the Bedrock text models your credentials can reach and lets you
+   pick one (or pass `--model`).
+3. Lets you choose a reasoning-**effort** level (or pass `--effort`).
+4. Verifies access to the chosen model with a tiny Bedrock `converse` call.
+5. Starts the LiteLLM proxy and launches Copilot against it.
+
+### Usage
+
+```sh
+bedrock-copilot --profile dev        # pick model + effort, then launch Copilot
+```
+
+or invoke the script directly:
+
+```sh
+uv run bedrock-copilot.py [options] [-- copilot args…]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `--model <id>` | Bedrock model id to use, skipping the menu (bare id or `bedrock/<id>`). |
+| `--effort <level>` | Reasoning effort, skipping the prompt: `none`, `low`, `medium`, `high`, `xhigh`, `max`. |
+| `--region <REGION>` | AWS region (default: `$AWS_REGION` or `us-east-1`). |
+| `--port <N>` | Local proxy port (default: `4000`). |
+| `--profile <NAME>` | AWS profile to use (else `$AWS_PROFILE`). |
+| `--op-key-ref` / `--op-secret-ref` / `--op-token-ref` | 1Password secret references for the access key id / secret / optional session token. |
+| `--provider-type <T>` | `COPILOT_PROVIDER_TYPE` (default: `openai`, matching the LiteLLM proxy). |
+| `--skip-validation` | Skip the `sts` + Bedrock access checks. |
+| `-h`, `--help` | Show help, including the list of required tools. |
+
+Any other arguments (or anything after `--`) are forwarded to `copilot`.
+
+```sh
+# fully non-interactive: explicit profile, model, and effort
+bedrock-copilot --profile dev \
+  --model anthropic.claude-3-5-sonnet-20241022-v2:0 --effort high
+
+# pull AWS keys straight from 1Password instead of a profile
+bedrock-copilot --op-key-ref "op://Private/AWS/access key id" \
+                --op-secret-ref "op://Private/AWS/secret access key"
+```
+
+### Notes & caveats
+
+- **Credentials are never written to disk.** With a profile / SSO the script
+  sets only `AWS_PROFILE` and lets boto3's chain do the auth; other sources live
+  only in the process environment.
+- **The model is fixed for the session — effort is not.** Copilot's BYOK is
+  single-model, so changing the model means relaunching; the effort level can be
+  changed live inside Copilot.
+- **Listing ≠ access.** The menu shows models that *exist* in the region; the
+  `converse` check confirms you can actually *invoke* the one you pick. Today's
+  Claude models are inference-profile-only and won't appear via
+  `list-foundation-models` — pass them with `--model`, or upgrade the AWS CLI so
+  `list-inference-profiles` is available.
+- **Requirements** (the script checks these and errors if any are missing): the
+  [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot` — *not*
+  `gh copilot`), the [AWS CLI v2](https://aws.amazon.com/cli/), and `uv` (which
+  installs LiteLLM from the script's inline dependencies). The
+  [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) is needed
+  only for the `--op-*` flags.
 
 ---
 
