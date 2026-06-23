@@ -9,6 +9,7 @@ the one you need and run it. Details for each are below.
 | [`baseconv.py`](#baseconvpy) | Convert a value between binary, decimal, octal, hex, and base64. |
 | [`bedrock-copilot.py`](#bedrock-copilotpy) | Launch the GitHub Copilot CLI against a model on AWS Bedrock, with model + effort pickers. |
 | [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
+| [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
@@ -813,6 +814,98 @@ Run `python rtf-runs.py --help` for the full reference.
   LCID; unrecognised codes are reported as `LCID <n>`.
 
 Exit status: `0` success · `1` the file could not be read ·
+`2` usage error (bad or missing arguments).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies).
+
+---
+
+## `cpp-unicode-escapes.py`
+
+Finds C++ string and character literals that misuse `\xNNNN` to mean a
+**Unicode code point** and rewrites them as the proper `\uNNNN`
+universal-character-name.
+
+This matters because C++'s `\x` escape is **greedy** — it consumes *every*
+hex digit that follows, not just two or four. So `"\x4E00"` is a single
+escape of value `0x4E00` (implementation-defined, often truncated in a narrow
+string), and `"\xABcat"` silently swallows the `c` and `a` as hex digits. When
+the intent was a 16-bit Unicode scalar, the correct spelling is the
+fixed-width `\uNNNN`, which always takes exactly four hex digits.
+
+It converts **only the unambiguous case**: `\x` followed by exactly four hex
+digits that are not followed by a fifth. It is **literal-aware**, not a blind
+regex, so it leaves alone:
+
+- 1–3 digit escapes (`\x41`, `\xAB`) — genuine byte values;
+- 5+ digit escapes (`\x10FFFF`) — ambiguous; convert those by hand;
+- surrogate values `\xD800`–`\xDFFF` — `\u` may not name a surrogate, so the
+  conversion would turn legal code into ill-formed code;
+- anything outside a string or character literal;
+- comments (`//` and `/* */`), raw string literals `R"(...)"`, and the
+  contents of escaped backslashes (`\\x...`);
+- the C++14 digit separator (`1'000'000`).
+
+By default it **edits files in place**; use `--dry-run` for a report that
+writes nothing. I/O is byte-preserving (original line endings and any
+non-ASCII bytes are untouched). It scans large trees quickly via a cheap
+byte-level pre-filter (files with no candidate are never decoded or scanned),
+`.git`/`.svn`/`.hg` pruning, and a ripgrep-style **thread pool** that overlaps
+read latency across many files.
+
+### Usage
+
+```sh
+cpp-unicode-escapes PATH [PATH ...] [options]
+```
+
+or invoke the script directly:
+
+```sh
+python cpp-unicode-escapes.py PATH [PATH ...] [options]
+```
+
+- Each `PATH` may be a file or a directory; directories are walked recursively.
+- Output is sorted by path for deterministic results regardless of thread order.
+
+| Option | Effect |
+| ------ | ------ |
+| `--dry-run` | Report the changes that would be made without writing any files. |
+| `--ext <list>` | Comma-separated extensions to scan when given a directory (default: common C/C++ extensions). |
+| `-q`, `--quiet` | Suppress the per-change lines; show only a summary. |
+| `-j`, `--jobs <N>` | Number of worker threads (default: scales with CPU count; `1` disables parallelism). |
+
+```sh
+# edit one file in place
+python cpp-unicode-escapes.py src/foo.cpp
+
+# recurse directories, in place
+python cpp-unicode-escapes.py src/ include/
+
+# preview only, write nothing
+python cpp-unicode-escapes.py src/ --dry-run
+
+# custom extension set
+python cpp-unicode-escapes.py . --ext .cpp,.h,.cuh
+
+# tune parallelism for a very large tree
+python cpp-unicode-escapes.py . -j 16
+```
+
+Run `python cpp-unicode-escapes.py --help` for the full reference.
+
+### Notes & caveats
+
+- **One ambiguous case to eyeball:** a literal like `"\xABcat"` becomes
+  `"ꯊ"`, because C++'s greedy `\x` *already* reads `ABca` as four hex
+  digits there — the conversion preserves the value but may not match the
+  author's intent. Run `--dry-run` first and scan for any 4-hex run
+  immediately followed by a hex letter (`a`–`f`) if you want to spot these.
+- Since the default is to edit in place, your **version control diff is the
+  safety net** — review it before committing.
+
+Exit status: `0` success (whether or not anything changed) ·
+`1` one or more files could not be read or written ·
 `2` usage error (bad or missing arguments).
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies).
