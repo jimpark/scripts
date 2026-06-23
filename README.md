@@ -10,6 +10,7 @@ the one you need and run it. Details for each are below.
 | [`bedrock-copilot.py`](#bedrock-copilotpy) | Launch the GitHub Copilot CLI against a model on AWS Bedrock, with model + effort pickers. |
 | [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
 | [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
+| [`docx-runs.py`](#docx-runspy) | Resolve and report the language of every text run in a `.docx`, with per-character script classification. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
@@ -906,6 +907,79 @@ Run `python cpp-unicode-escapes.py --help` for the full reference.
 
 Exit status: `0` success (whether or not anything changed) ·
 `1` one or more files could not be read or written ·
+`2` usage error (bad or missing arguments).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies).
+
+---
+
+## `docx-runs.py`
+
+Reports the resolved **language of every text run** in a `.docx`. A *run*
+(`<w:r>`) is a contiguous span of text with uniform formatting; its language
+lives in `<w:lang>`, but Word rarely stamps every run, so the value is resolved
+by walking the WordprocessingML inheritance hierarchy. A `.docx` is just a ZIP
+of XML parts, so this uses the standard library only (`zipfile` +
+`xml.etree.ElementTree`) — no `python-docx` or other dependency.
+
+For each run the language is resolved in order: direct run properties
+(`w:rPr/w:lang`) → character style (`w:rStyle`, following `w:basedOn`) →
+paragraph style (`w:pStyle`, or the document's default paragraph style if none)
+→ document defaults (`w:docDefaults`). The paragraph mark's own properties
+(`w:pPr/w:rPr`) are deliberately **not** consulted: per ECMA-376 they format the
+pilcrow, not the runs inside the paragraph.
+
+`<w:lang>` carries up to three attributes — `w:val` (Latin/Western),
+`w:eastAsia` (CJK/Hangul/Kana), and `w:bidi` (RTL/complex) — applied
+per character by script. The tool classifies the run's characters to report
+which slot actually applies, falling back to the run's `<w:rFonts w:hint>` and
+then the surrounding script for script-neutral runs (digits, punctuation).
+
+### Usage
+
+```sh
+docx-runs FILE.docx [options]
+```
+
+or invoke the script directly:
+
+```sh
+python docx-runs.py FILE.docx [options]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `--json` | Emit machine-readable JSON (one object per run) instead of a human-readable listing. |
+| `--merge` | Coalesce adjacent runs of the same effective language within a paragraph into one segment per contiguous language span. |
+
+```sh
+# human-readable listing
+python docx-runs.py document.docx
+
+# coalesce Word's fragmented runs into clean per-language segments
+python docx-runs.py document.docx --merge
+
+# machine-readable output for scripting
+python docx-runs.py document.docx --json
+```
+
+Run `python docx-runs.py --help` for the full reference.
+
+### Notes & caveats
+
+- **`--merge` treats invisible characters as language-neutral.** Whitespace,
+  zero-width spaces, and Unicode bidi controls (LRM/RLM, the isolates, and the
+  legacy embeddings/overrides) carry no language; they fold into the
+  surrounding segment instead of shattering a contiguous language span.
+- **One effective language per run.** The script reports the *dominant* script
+  of each run rather than labelling every code point individually, which is a
+  simplification of the per-character model for runs that genuinely mix scripts.
+- Runs marked `<w:noProof/>` (spell/grammar check disabled) are still reported;
+  treat them as language-agnostic if you're feeding a spellchecker.
+- The application/OS editing locale (the lowest fallback) isn't stored in the
+  file, so a run that resolves to nothing is reported as undetermined.
+
+Exit status: `0` success · `1` the file is not a readable `.docx` ·
 `2` usage error (bad or missing arguments).
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies).
