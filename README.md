@@ -10,6 +10,7 @@ the one you need and run it. Details for each are below.
 | [`bedrock-copilot.py`](#bedrock-copilotpy) | Launch the GitHub Copilot CLI against a model on AWS Bedrock, with model + effort pickers. |
 | [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
 | [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
+| [`cpp-unicode-literals.py`](#cpp-unicode-literalspy) | Classify C++ string literals by encoding type and migrate narrow/wide literals to `u8`/`u`. |
 | [`docx-runs.py`](#docx-runspy) | Resolve and report the language of every text run in a `.docx`, with per-character script classification. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
@@ -983,3 +984,100 @@ Exit status: `0` success · `1` the file is not a readable `.docx` ·
 `2` usage error (bad or missing arguments).
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies).
+
+---
+
+## `cpp-unicode-literals.py`
+
+Classifies every C++ **string literal** by its encoding type and migrates the
+narrow and wide ones to their Unicode-typed spellings:
+
+```
+"..."      ->  u8"..."      (narrow  char[]    ->  char8_t[] in C++20)
+L"..."     ->   u"..."      (wide    wchar_t[] ->  char16_t[])
+R"(...)"   ->  u8R"(...)"   (the matching raw-string forms)
+LR"(...)"  ->   uR"(...)"
+```
+
+Rather than a regex, it parses each translation unit with **tree-sitter**'s C++
+grammar and rewrites only the opening prefix of real literal nodes — so a `"`
+inside a comment, inside a raw-string body, or after an escaped backslash is
+left alone *by construction*. Already-Unicode literals (`u8`, `u`, `U` and their
+raw forms) and character literals (`'x'`, `L'x'`) are classified but never
+touched.
+
+### A note on soundness
+
+tree-sitter is a **parser, not a type checker**: it knows exactly *what kind* of
+literal each token is, but not how the literal is *used*. The rewrites above are
+**type-changing, not value-preserving**:
+
+- `narrow -> u8` turns `char[]` into `char8_t[]` (C++20), so anything passing the
+  literal where a `const char*` is expected stops compiling;
+- `L -> u` turns `wchar_t[]` into `char16_t[]` — a different type, and a
+  different width on Linux/macOS where `wchar_t` is 32-bit.
+
+So treat every rewrite as a **reviewed suggestion**, not a guaranteed-safe edit.
+Run `--dry-run` first, use `--report` to inventory every literal by type (the
+plain narrow ones especially) and decide which truly belong in `char8_t`, and
+lean on your version-control diff as the final safety net.
+
+### Usage
+
+```sh
+cpp-unicode-literals PATH [PATH ...] [options]
+```
+
+or invoke the script directly:
+
+```sh
+uv run cpp-unicode-literals.py PATH [PATH ...] [options]
+```
+
+- Each `PATH` may be a file or a directory; directories are walked recursively
+  (with `.git`/`.svn`/`.hg` pruned), and output is sorted by path.
+- By default it **edits files in place**; `--dry-run` previews and `--report`
+  only classifies (neither writes anything).
+
+| Option | Effect |
+| ------ | ------ |
+| `--dry-run` | Preview the rewrites without writing any files. |
+| `--report` | Don't rewrite; inventory every literal grouped by encoding type. |
+| `--json` | With `--report`, emit JSON (one record per literal) instead of a listing. |
+| `--ext <list>` | Comma-separated extensions to scan when given a directory (default: common C/C++ extensions). |
+| `-q`, `--quiet` | Suppress the per-literal lines; show only the summaries. |
+| `-j`, `--jobs <N>` | Number of worker threads (default: scales with CPU count; `1` disables parallelism). |
+
+```sh
+# rewrite one file in place
+uv run cpp-unicode-literals.py src/foo.cpp
+
+# recurse directories, in place
+uv run cpp-unicode-literals.py src/ include/
+
+# preview only, write nothing
+uv run cpp-unicode-literals.py src/ --dry-run
+
+# inventory every literal by type, for review
+uv run cpp-unicode-literals.py src/ --report
+
+# machine-readable inventory for scripting
+uv run cpp-unicode-literals.py src/ --report --json
+```
+
+Run `uv run cpp-unicode-literals.py --help` for the full reference.
+
+### Notes & caveats
+
+- **The default rewrites your files.** Since the conversions are type-changing
+  (see *A note on soundness*), your **version-control diff is the safety net** —
+  review it before committing, and prefer `--dry-run` / `--report` first.
+- **Adjacent literals are each rewritten independently**, so `"ab" "cd"` becomes
+  `u8"ab" u8"cd"`. Mixed-prefix concatenation (e.g. `L"a" "b"`) is ill-formed
+  C++ regardless.
+- The scan is **idempotent**: re-running finds the already-`u8`/`u` literals and
+  makes no further changes.
+- **Requirements:** Python 3.9+ and the `tree-sitter` + `tree-sitter-cpp`
+  packages, declared as inline script dependencies and installed automatically
+  when run via [`uv`](https://docs.astral.sh/uv) (`uv run cpp-unicode-literals.py`,
+  or the bare `cpp-unicode-literals` wrapper).
