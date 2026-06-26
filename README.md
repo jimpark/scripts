@@ -16,6 +16,7 @@ the one you need and run it. Details for each are below.
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
+| [`switch-branch.py`](#switch-branchpy) | Interactive, vim-style Git branch switcher with a collapsible folder tree and remote branches. |
 | [`unicode-clipboard.py`](#unicode-clipboardpy) | Copy Unicode characters to the clipboard by codepoint, so you can paste the untypeable. |
 | [`unicode-info.py`](#unicode-infopy) | Fetch and display Unicode character information for a codepoint. |
 
@@ -1081,3 +1082,81 @@ Run `uv run cpp-unicode-literals.py --help` for the full reference.
   packages, declared as inline script dependencies and installed automatically
   when run via [`uv`](https://docs.astral.sh/uv) (`uv run cpp-unicode-literals.py`,
   or the bare `cpp-unicode-literals` wrapper).
+
+---
+
+## `switch-branch.py`
+
+A full-screen, **interactive Git branch switcher** in the spirit of `fzf` /
+`lazygit`: it lists your branches, lets you home in on one three different ways,
+and checks it out. The picker is **modal**, like vim.
+
+**NORMAL mode** (the default):
+
+| Key | Action |
+| --- | ------ |
+| `j` / `k` or `↑` / `↓` | move the highlight cursor |
+| `g` / `G` | jump to the top / bottom |
+| `h` / `←` | collapse the folder (or hop to the parent folder) |
+| `l` / `→` | expand the folder (or descend into it) |
+| *digits* then `Enter` | select a branch by **number** (the cursor follows as you type, so `12⏎` lands on branch 12) |
+| `Enter` | expand/collapse a folder, or switch to a branch |
+| `/` | enter FILTER mode |
+| `Tab` (or `r`) | toggle **remote** branches in / out of the list |
+| `q` / `Esc` | quit without switching |
+
+**FILTER mode** (entered with `/`): type a **regular expression** that filters
+the branch names; `↑`/`↓` move among the matches, `Enter` switches to the
+highlighted branch, `Backspace` edits, `Esc` clears the filter and returns to
+NORMAL. (An invalid regex falls back to a literal match, flagged in the footer.)
+
+Branch names are split on `/` into a collapsible **folder tree**, so
+`feature/login` and `feature/logout` tuck under a `feature/` folder. Folders
+start **collapsed**; expand them on demand, or just start typing a filter — a
+filter auto-expands every folder that contains a match.
+
+Press `Tab` (or `r`) to fold in **remote** branches; they nest under their
+remote as a folder (`origin/ › feature/ › login`). Picking a remote branch that
+has no local counterpart **creates a local tracking branch and switches to it**
+(`git switch -c <name> --track <remote>/<name>`); if a local branch of that name
+already exists, it just switches to the local one.
+
+### Usage
+
+Run it from inside the repository:
+
+```sh
+switch-branch [options]
+```
+
+or invoke the script directly:
+
+```sh
+python switch-branch.py [options]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `-r`, `--remotes` | Start with remote branches already included. |
+| `--no-color` | Disable colored output (also honors `NO_COLOR`). |
+
+Run `python switch-branch.py --help` for the full key reference.
+
+### Notes & caveats
+
+- **The current branch is marked `*`** and the cursor opens on it; selecting it
+  is a no-op. `git switch` handles the actual checkout, so an unclean working
+  tree that would be clobbered makes it refuse — its message is printed and the
+  tool exits non-zero, exactly as a manual `git switch` would.
+- It draws on the **alternate screen** over `stderr` and reads keys in raw mode
+  from `stdin`; both must be a terminal (piping in or out prints an error).
+- **No third-party dependencies** — the TUI is hand-rolled with raw terminal
+  mode and ANSI escapes (no `curses`), so the one script runs on **macOS,
+  Linux, and Windows** (Windows 10+ console, VT mode enabled automatically).
+
+Exit status: `0` a branch was switched, or you quit without choosing ·
+`1` not inside a Git repository, not an interactive terminal, or `git switch`
+failed.
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies) and Git
+on `PATH`.
