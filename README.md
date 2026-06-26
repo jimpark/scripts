@@ -1,7 +1,10 @@
 # scripts
 
 A small collection of standalone utility scripts. Each is self-contained — grab
-the one you need and run it. Details for each are below.
+the one you need and run it. (The one exception: [`switch-branch.py`](#switch-branchpy)
+and [`delete-branch.py`](#delete-branchpy) share their TUI engine through a
+neighbouring `branch_tui.py` module — keep the three files together.) Details
+for each are below.
 
 | Script | What it does |
 | ------ | ------------ |
@@ -11,6 +14,7 @@ the one you need and run it. Details for each are below.
 | [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
 | [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
 | [`cpp-unicode-literals.py`](#cpp-unicode-literalspy) | Classify C++ string literals by encoding type and migrate narrow/wide literals to `u8`/`u`. |
+| [`delete-branch.py`](#delete-branchpy) | Interactively check off Git branches (local and remote) — even whole folders — and delete them. |
 | [`docx-runs.py`](#docx-runspy) | Resolve and report the language of every text run in a `.docx`, with per-character script classification. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
@@ -1158,5 +1162,69 @@ Exit status: `0` a branch was switched, or you quit without choosing ·
 `1` not inside a Git repository, not an interactive terminal, or `git switch`
 failed.
 
-**Requirements:** Python 3.6+ (standard library only; no dependencies) and Git
-on `PATH`.
+**Requirements:** Python 3.6+ (standard library only; no dependencies), Git on
+`PATH`, and the `branch_tui.py` module beside it (shared with `delete-branch.py`).
+
+---
+
+## `delete-branch.py`
+
+The same vim-style picker as [`switch-branch.py`](#switch-branchpy), but instead
+of switching you **check off** as many branches as you like — local *and*
+remote, or whole folders — and delete them in one pass. It shares its entire
+navigation engine with `switch-branch.py` (the folder tree, regex filter,
+remotes toggle, and all the keys behave identically).
+
+The differences are the checkboxes and what `Enter` does:
+
+| Key | Action |
+| --- | ------ |
+| `Space` | check / uncheck the branch — or the **whole folder** — under the cursor |
+| `Enter` | delete everything that's checked (after a confirmation) |
+| `F` | toggle **force**: `git branch -D` instead of the safe `-d` |
+| `j`/`k`, `g`/`G`, `h`/`l`, `/`, `Tab`, `q` | exactly as in `switch-branch.py` |
+
+Checking a folder checks every branch beneath it; a `[~]` box means only *some*
+of a folder's branches are checked. The branch you're currently on is
+**protected** — it has no checkbox, since Git won't delete the branch you're
+standing on.
+
+### Safety
+
+- **Nothing is deleted from the TUI.** When you press `Enter` the picker closes
+  and prints exactly what will go — **local** deletions and **remote** ones
+  (`git push <remote> --delete`, which updates the shared remote for everyone)
+  listed separately — then asks for a single `y/N`.
+- **Unmerged branches are refused by default.** Local deletes use `git branch
+  -d`, which won't drop a branch whose commits aren't merged; press `F` to force
+  (`-D`) when you really mean to discard them. Remote deletions are always
+  forced — that's how `git push --delete` works.
+
+### Usage
+
+Run it from inside the repository:
+
+```sh
+delete-branch [options]
+```
+
+or invoke the script directly:
+
+```sh
+python delete-branch.py [options]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `-r`, `--remotes` | Start with remote branches already included. |
+| `-f`, `--force` | Start in force mode (`git branch -D`). |
+| `--no-color` | Disable colored output (also honors `NO_COLOR`). |
+
+Run `python delete-branch.py --help` for the full key reference.
+
+Exit status: `0` deletions ran, or you quit / aborted without deleting ·
+`1` not inside a Git repository, not an interactive terminal, or one or more
+deletions failed (e.g. an unmerged branch refused without `--force`).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies), Git on
+`PATH`, and the `branch_tui.py` module beside it (shared with `switch-branch.py`).
