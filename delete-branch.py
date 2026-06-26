@@ -56,7 +56,7 @@ from collections import defaultdict
 from branch_tui import (Picker, TerminalSession, branches_under, get_branches,
                         git, in_git_repo, split_remote_ref)
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 class DeletePicker(Picker):
@@ -152,9 +152,16 @@ class DeletePicker(Picker):
                 "Tab remotes · q quit")
 
 
+def _yes(prompt):
+    try:
+        return input(prompt).strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
 def confirm_and_delete(checked, force, remote_names):
     """Print the deletion plan, get a y/N, then carry it out. Returns an exit
-    code (0 unless a deletion failed)."""
+    code (0 unless a deletion failed unexpectedly)."""
     locals_ = sorted((b for b in checked if b.kind == "local"), key=lambda b: b.name)
     remotes_ = sorted((b for b in checked if b.kind == "remote"), key=lambda b: b.name)
 
@@ -169,25 +176,45 @@ def confirm_and_delete(checked, force, remote_names):
             print("    {0}".format(b.name))
 
     total = len(locals_) + len(remotes_)
-    try:
-        answer = input("\nDelete {0} branch(es)? [y/N] ".format(total)).strip().lower()
-    except EOFError:
-        answer = ""
-    if answer not in ("y", "yes"):
+    if not _yes("\nDelete {0} branch(es)? [y/N] ".format(total)):
         print("Aborted. Nothing was deleted.")
         return 0
 
     failed = False
 
+    # --- local deletes ------------------------------------------------------
     flag = "-D" if force else "-d"
+    unmerged = []
     for b in locals_:
         proc = git(["branch", flag, b.name])
         if proc.returncode == 0:
             print("deleted local  {0}".format(b.name))
+        elif not force and "not fully merged" in (proc.stderr or ""):
+            unmerged.append(b)              # collected; offer to force below
         else:
-            sys.stderr.write(proc.stderr)
+            sys.stderr.write(proc.stderr)   # an unexpected failure
             failed = True
 
+    # A plain `git branch -d` refuses unmerged branches. Rather than make you
+    # restart and re-tick everything, offer to force-delete exactly those.
+    if unmerged:
+        print("\n{0} local branch(es) were kept because they're not fully "
+              "merged:".format(len(unmerged)))
+        for b in unmerged:
+            print("    {0}".format(b.name))
+        if _yes("Force-delete these with 'git branch -D' "
+                "(this discards their unmerged commits)? [y/N] "):
+            for b in unmerged:
+                proc = git(["branch", "-D", b.name])
+                if proc.returncode == 0:
+                    print("force-deleted local  {0}".format(b.name))
+                else:
+                    sys.stderr.write(proc.stderr)
+                    failed = True
+        else:
+            print("Kept {0} unmerged branch(es).".format(len(unmerged)))
+
+    # --- remote deletes -----------------------------------------------------
     # One push per remote deletes all of its branches in a single round-trip.
     by_remote = defaultdict(list)
     refs = {}

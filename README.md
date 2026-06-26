@@ -1203,8 +1203,12 @@ standing on.
   listed separately — then asks for a single `y/N`.
 - **Unmerged branches are refused by default.** Local deletes use `git branch
   -d`, which won't drop a branch whose commits aren't merged; press `F` to force
-  (`-D`) when you really mean to discard them. Remote deletions are always
-  forced — that's how `git push --delete` works.
+  (`-D`) up front when you already know you want to discard them. Remote
+  deletions are always forced — that's how `git push --delete` works.
+- **If `-d` refuses some branches, you're offered to force just those.** Rather
+  than make you restart and re-tick everything, any branch held back as "not
+  fully merged" is listed and you get a second `y/N` to force-delete exactly
+  that set with `git branch -D` (git's `hint:` chatter is suppressed).
 
 ### Usage
 
@@ -1228,9 +1232,9 @@ python delete-branch.py [options]
 
 Run `python delete-branch.py --help` for the full key reference.
 
-Exit status: `0` deletions ran, or you quit / aborted without deleting ·
-`1` not inside a Git repository, not an interactive terminal, or one or more
-deletions failed (e.g. an unmerged branch refused without `--force`).
+Exit status: `0` deletions ran (including deliberately keeping unmerged
+branches), or you quit / aborted without deleting · `1` not inside a Git
+repository, not an interactive terminal, or a deletion failed unexpectedly.
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies), Git on
 `PATH`, and the `branch_tui.py` module beside it (shared with `switch-branch.py`).
