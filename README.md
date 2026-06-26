@@ -1183,7 +1183,8 @@ The differences are the checkboxes and what `Enter` does:
 | `Enter` | same meaning as in `switch-branch.py`: expand/collapse a folder, or check/uncheck a branch — it **never deletes** |
 | `d` | delete everything that's checked (after a confirmation) |
 | `F` | toggle **force**: `git branch -D` instead of the safe `-d` |
-| `j`/`k`, `g`/`G`, `h`/`l`, `/`, `Tab`, `q` | exactly as in `switch-branch.py` |
+| *digits* | jump the cursor to a branch by **number** (then `Space`/`Enter` to check it) |
+| `j`/`k`, `g`/`G`, `h`/`l`, `/`, `Tab`, `q` | move, fold, filter, toggle remotes, quit — exactly as in `switch-branch.py` |
 
 `Enter` deliberately keeps its `switch-branch.py` meaning so muscle memory never
 triggers a delete; deletion lives on its own key, `d`. (While you're typing a
