@@ -8,9 +8,11 @@ branches as you like (local and remote) and delete them in one go.
     g / G                    jump to the top / bottom
     h / Left                 collapse the folder (or hop to the parent folder)
     l / Right                expand the folder (or descend into it)
-    Space                    check / uncheck the branch (or whole folder) here
+    Space  or  Enter         check / uncheck the branch here; on a folder Enter
+                             expands/collapses it while Space checks the whole
+                             folder (so Enter never deletes -- same as switch-branch)
     <digits>                 jump the cursor to a branch by number
-    Enter                    delete everything that's checked (asks first)
+    d                        delete everything that's checked (asks first)
     F                        toggle force: git branch -D instead of -d
     /                        enter FILTER mode
     Tab  (or r)              toggle remote branches in / out of the list
@@ -18,10 +20,11 @@ branches as you like (local and remote) and delete them in one go.
 
   FILTER mode (entered with /)
     type                     a regular expression that filters the branch names
-    Space                    check / uncheck the highlighted branch
+    Space  or  Enter         check / uncheck the highlighted branch
     Up / Down                move the cursor among the matches
-    Enter                    delete everything that's checked
-    Backspace / Esc          edit the expression / clear it
+    Backspace                edit the expression
+    Esc                      clear the filter and return to NORMAL
+    (to delete after filtering, press Esc then d -- your checks are kept)
 
 Checking a **folder** checks every branch under it (a `[~]` box means only some
 of its branches are checked). The branch you're currently on is protected -- it
@@ -53,7 +56,7 @@ from collections import defaultdict
 from branch_tui import (Picker, TerminalSession, branches_under, get_branches,
                         git, in_git_repo, split_remote_ref)
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 class DeletePicker(Picker):
@@ -88,19 +91,36 @@ class DeletePicker(Picker):
 
     # -- hooks ---------------------------------------------------------------
     def on_extra_key(self, key):
+        # In FILTER mode, letters are regex input, so only Space (which is never
+        # part of a branch name) acts as a command there; 'd'/'F' fall through to
+        # the query. In NORMAL mode they are commands.
         if key == " ":
             self.toggle_check_current()
             return True
-        if key == "F" and self.mode == "normal":
+        if self.mode != "normal":
+            return None
+        if key == "F":
             self.force = not self.force
             return True
+        if key == "d":                         # the dedicated delete trigger
+            if not self.checked:
+                return True                    # nothing ticked -> no-op
+            self.result = "delete"             # close the picker; caller confirms
+            return False
         return None
 
     def on_enter(self):
-        if not self.checked:
-            return True                        # nothing ticked -> no-op
-        self.result = "delete"                 # caller reads self.checked / .force
-        return False
+        # Enter keeps its switch-branch meaning so it never deletes: open/close a
+        # folder, or tick/untick a branch. Deletion is on its own key ('d').
+        row = self.current_row()
+        if row is None:
+            return True
+        self.pending = ""
+        if row["type"] == "folder":
+            self.toggle_folder(row)
+        else:
+            self.toggle_check_current()
+        return True
 
     def checkbox(self, row):
         if row["type"] == "folder":
@@ -126,9 +146,9 @@ class DeletePicker(Picker):
 
     def footer(self):
         if self.mode == "filter":
-            return (" ↑↓ move · Space check · ⏎ delete · ⌫ del · Esc clear"
+            return (" ↑↓ move · Space/⏎ check · ⌫ del · Esc then d to delete"
                     + self._filter_suffix())
-        return (" Space check · ⏎ delete · F force · / filter · h/l fold · "
+        return (" Space/⏎ check · d delete · F force · / filter · h/l fold · "
                 "Tab remotes · q quit")
 
 
@@ -194,9 +214,9 @@ def parse_args(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "keys:\n"
-            "  j/k or arrows  move      Space  check       h/l  collapse/expand\n"
-            "  Enter          delete    F      force (-D)  /    filter\n"
-            "  Tab            remotes    q     quit        Esc  back/clear\n"
+            "  j/k or arrows  move       Space/Enter  check    h/l  collapse/expand\n"
+            "  d              delete     F            force    /    filter\n"
+            "  Tab            remotes    q            quit     Esc  back/clear\n"
         ),
     )
     parser.add_argument("-r", "--remotes", action="store_true",

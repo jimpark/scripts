@@ -1180,9 +1180,15 @@ The differences are the checkboxes and what `Enter` does:
 | Key | Action |
 | --- | ------ |
 | `Space` | check / uncheck the branch — or the **whole folder** — under the cursor |
-| `Enter` | delete everything that's checked (after a confirmation) |
+| `Enter` | same meaning as in `switch-branch.py`: expand/collapse a folder, or check/uncheck a branch — it **never deletes** |
+| `d` | delete everything that's checked (after a confirmation) |
 | `F` | toggle **force**: `git branch -D` instead of the safe `-d` |
 | `j`/`k`, `g`/`G`, `h`/`l`, `/`, `Tab`, `q` | exactly as in `switch-branch.py` |
+
+`Enter` deliberately keeps its `switch-branch.py` meaning so muscle memory never
+triggers a delete; deletion lives on its own key, `d`. (While you're typing a
+filter, `d` is part of the expression — press `Esc` first, then `d`; your checks
+are kept.)
 
 Checking a folder checks every branch beneath it; a `[~]` box means only *some*
 of a folder's branches are checked. The branch you're currently on is
@@ -1191,7 +1197,7 @@ standing on.
 
 ### Safety
 
-- **Nothing is deleted from the TUI.** When you press `Enter` the picker closes
+- **Nothing is deleted from the TUI.** When you press `d` the picker closes
   and prints exactly what will go — **local** deletions and **remote** ones
   (`git push <remote> --delete`, which updates the shared remote for everyone)
   listed separately — then asks for a single `y/N`.
