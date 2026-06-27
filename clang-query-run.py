@@ -22,11 +22,13 @@ bounded recursive scan down from the root that catches DBs buried in deep build
 trees (e.g. .build/core/darwin/arm64/release/). The newest is chosen if several
 exist. Pass -p to point at a build dir or the file directly to override.
 
-IMPORTANT on macOS: clang-query must use headers matching the compiler in the
-DB. Easiest path is to build the DB with the same toolchain as clang-query (e.g.
-homebrew clang++), or pass
-  --extra-arg=-isysroot=$(xcrun --show-sdk-path)
-  --extra-arg=-resource-dir=$(clang -print-resource-dir)
+macOS: clang-query must use headers matching the compiler in the DB. A DB built
+by Apple clang++ usually omits -isysroot (Apple clang has a baked-in SDK), so
+homebrew clang-query can't find <stdio.h>/<filesystem> and every TU fails. This
+tool fixes that automatically: on macOS it probes the SDK (`xcrun
+--show-sdk-path`) and clang-query's own resource dir and adds the matching
+-isysroot/-resource-dir for you. Disable with --no-auto-sdk; override by passing
+your own --extra-arg (auto-injection backs off if you already gave the flag).
 
 Output modes:
   (default)   one file:line:col per hit (location queries) / raw clang-query
@@ -172,6 +174,48 @@ def recursive_db_search(root):
     return found
 
 
+def _capture(cmd):
+    """Run cmd, return stripped stdout, or None if it can't run / is empty."""
+    try:
+        out = subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL).stdout.strip()
+        return out or None
+    except OSError:
+        return None
+
+
+def macos_sdk_args(clang_query, existing):
+    """On macOS, return extra clang args so a homebrew/upstream clang-query can
+    find the headers Apple's compiler finds implicitly.
+
+    A compile DB produced by Apple clang++ rarely spells out -isysroot (Apple
+    clang has a default SDK baked in), so when homebrew clang-query replays the
+    command it can't locate <stdio.h>/<filesystem> and every TU fails to parse.
+    We supply two things Apple clang gets for free:
+      -isysroot <SDK>        macOS SDK -> system + libc++ headers
+      -resource-dir <dir>    builtin headers matching clang-query's OWN clang
+                             version (derived from the sibling `clang`, so it
+                             always matches the tool, never Apple's)
+    Skipped if not on macOS, if the user already passed the flag, or if the
+    underlying tool (xcrun / clang) isn't available.
+    """
+    if sys.platform != "darwin":
+        return []
+    joined = " ".join(existing)
+    extra = []
+    if "-isysroot" not in joined:
+        sdk = _capture(["xcrun", "--show-sdk-path"])
+        if sdk:
+            extra += ["-isysroot", sdk]
+    if "-resource-dir" not in joined:
+        sib = Path(clang_query).with_name("clang")
+        clang_bin = str(sib) if sib.exists() else "clang"
+        rd = _capture([clang_bin, "-print-resource-dir"])
+        if rd:
+            extra += ["-resource-dir", rd]
+    return extra
+
+
 def find_compile_db(arg):
     """Resolve the directory holding a compile_commands.json.
 
@@ -307,6 +351,9 @@ def main():
                              or "/opt/homebrew/opt/llvm/bin/clang-query"))
     ap.add_argument("--extra-arg", action="append", default=[],
                     help="extra clang arg, repeatable (e.g. -isysroot=...)")
+    ap.add_argument("--no-auto-sdk", action="store_true",
+                    help="don't auto-add macOS -isysroot/-resource-dir "
+                         "(on by default on macOS; see the macOS note)")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("-c", "--context", type=int, default=6,
                     help="source context lines on each side (report/json)")
@@ -357,10 +404,18 @@ def run(args, query_file, rubric_path):
 
     sources = sorted({e["file"] for e in json.loads(db.read_text())})
 
+    extra = list(args.extra_arg)
+    if not args.no_auto_sdk:
+        auto = macos_sdk_args(args.clang_query, args.extra_arg)
+        if auto:
+            print("macOS: auto-added " + " ".join(auto) +
+                  "  (disable with --no-auto-sdk)", file=sys.stderr)
+            extra = auto + extra
+
     seen, raw_chunks, errors = set(), [], []
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futs = [pool.submit(run_one, args.clang_query, str(db_dir), query_file,
-                            s, args.extra_arg) for s in sources]
+                            s, extra) for s in sources]
         for i, (s, f) in enumerate(zip(sources, futs), 1):
             print(f"\r[{i}/{len(sources)}] scanning...", end="", file=sys.stderr)
             hits, raw, err = f.result()
@@ -401,10 +456,12 @@ def run(args, query_file, rubric_path):
         empty = not raw_chunks if raw_mode else not seen
         if empty:
             head += (".\n  Zero results here most likely means the parse "
-                     "failed, not that the code is clean. The usual cause on "
-                     "macOS is an Apple-clang compile DB queried with homebrew "
-                     "clang-query (header mismatch) — see the macOS note in "
-                     "--help for the two fixes")
+                     "failed, not that the code is clean. On macOS this tool "
+                     "auto-adds -isysroot/-resource-dir to fix the usual "
+                     "Apple-clang-DB header mismatch; if TUs still fail, the "
+                     "SDK probe may have failed (is `xcrun` working?) or the "
+                     "build needs a specific toolchain — see the macOS note in "
+                     "--help, or pass --extra-arg yourself")
         if args.show_errors:
             sys.stderr.write(f"\n{head}:\n\n" + "\n\n".join(errors) + "\n")
         else:

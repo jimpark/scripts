@@ -1355,6 +1355,7 @@ specific build dir — or straight at the JSON file — to override.
 | `-j`, `--jobs N` | Parallel `clang-query` workers (default: CPU count). |
 | `--clang-query PATH` | Path to the `clang-query` binary. |
 | `--extra-arg ARG` | Extra clang arg, repeatable (see the macOS note below). |
+| `--no-auto-sdk` | Don't auto-add macOS `-isysroot`/`-resource-dir` (on by default on macOS). |
 | `--show-errors` | Print the TUs `clang-query` failed to parse. |
 
 Run `uv run clang-query-run.py --help` for the full reference.
@@ -1368,13 +1369,22 @@ fails with `fatal error: 'filesystem' file not found`. A silent parse failure
 means *missed* findings, not false ones — so don't trust a clean run that also
 reports parse errors (**rerun with `--show-errors`** to see which TUs failed).
 
-Pick one fix:
+**The runner handles this for you on macOS.** Before scanning it probes the SDK
+(`xcrun --show-sdk-path`) and `clang-query`'s own resource dir, and injects the
+matching `-isysroot` / `-resource-dir` — exactly the flags an Apple-clang DB
+omits because Apple clang has them baked in. The resource dir is taken from the
+`clang` *next to* `clang-query`, so the builtin headers always match the tool's
+version, never Apple's. It backs off if you already passed those flags yourself,
+and you can turn it off with `--no-auto-sdk`.
+
+If TUs *still* fail to parse after that, either the SDK probe failed (is `xcrun`
+working?) or the build genuinely needs a specific toolchain. Then pick one:
 
 - **Build the compile DB with the matching toolchain** (simplest) —
   `-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++`; or
-- **Reconcile headers at query time** without rebuilding:
-  `--extra-arg=-isysroot=$(xcrun --show-sdk-path)
-  --extra-arg=-resource-dir=$(clang -print-resource-dir)`.
+- **Pass the headers yourself** — `--extra-arg=-isysroot --extra-arg="$(xcrun
+  --show-sdk-path)"` (and similar for `-resource-dir`), which also disables the
+  auto-injection for that flag.
 
 Also note `clang-query` is often a shell **alias**, which a Python subprocess
 can't see; the script falls back to `/opt/homebrew/opt/llvm/bin/clang-query`, or

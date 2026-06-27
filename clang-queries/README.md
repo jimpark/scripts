@@ -94,6 +94,8 @@ at the prompt before saving it here.
 
 On macOS, `clang-query` must parse with headers matching the compiler in the
 compile DB, or every TU fails with `fatal error: 'filesystem' file not found`
-(silent *missed* findings). This is a runner/toolchain concern, not a per-query
-one — see the **macOS gotcha** in the [main README](../README.md#clang-query-runpy)
-for the two fixes.
+(silent *missed* findings). The runner auto-injects the macOS SDK
+`-isysroot`/`-resource-dir` to fix the common case; this is a runner/toolchain
+concern, not a per-query one — see the **macOS gotcha** in the
+[main README](../README.md#clang-query-runpy) for the details and the
+`--no-auto-sdk` escape hatch.
