@@ -1,16 +1,19 @@
 # scripts
 
 A small collection of standalone utility scripts. Each is self-contained — grab
-the one you need and run it. (The one exception: [`switch-branch.py`](#switch-branchpy)
-and [`delete-branch.py`](#delete-branchpy) share their TUI engine through a
-neighbouring `branch_tui.py` module — keep the three files together.) Details
-for each are below.
+the one you need and run it. (Two exceptions ship with a companion file: keep it
+beside the script. [`switch-branch.py`](#switch-branchpy) and
+[`delete-branch.py`](#delete-branchpy) share their TUI engine through a
+neighbouring `branch_tui.py` module, and
+[`clang-query-run.py`](#clang-query-runpy) loads its AST matchers from a
+neighbouring `clang-queries/` directory.) Details for each are below.
 
 | Script | What it does |
 | ------ | ------------ |
 | [`backport.py`](#backportpy) | Cherry-pick one author's commits from a source branch onto a target branch. |
 | [`baseconv.py`](#baseconvpy) | Convert a value between binary, decimal, octal, hex, and base64. |
 | [`bedrock-copilot.py`](#bedrock-copilotpy) | Launch the GitHub Copilot CLI against a model on AWS Bedrock, with model + effort pickers. |
+| [`clang-query-run.py`](#clang-query-runpy) | Run any `clang-query` AST matcher across a whole compile DB, in parallel, and emit an AI-ready investigation packet. |
 | [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
 | [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
 | [`cpp-unicode-literals.py`](#cpp-unicode-literalspy) | Classify C++ string literals by encoding type and migrate narrow/wide literals to `u8`/`u`. |
@@ -1239,3 +1242,160 @@ repository, not an interactive terminal, or a deletion failed unexpectedly.
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies), Git on
 `PATH`, and the `branch_tui.py` module beside it (shared with `switch-branch.py`).
+
+---
+
+## `clang-query-run.py`
+
+Runs **any** `clang-query` AST matcher across every translation unit in a
+`compile_commands.json`, in parallel, and aggregates the matches into an
+AI-ready **investigation packet**. The query is not hardcoded — pick one from a
+small library, point at a `.query` file, or pass one inline.
+
+The point is that it uses Clang's AST matchers, **not grep**. Only the compiler
+knows whether `x.string()` is a `std::filesystem::path` method or some unrelated
+`string()` / `to_string()` / `optional_string()` — and the same is true for any
+type- or overload-aware query you want to run.
+
+This is the reusable scaffolding around a query: compile-DB auto-detection,
+parallel fan-out over all TUs, deduping hits seen through multiple TUs, the
+"compiled-but-failed-to-parse" detection that `clang-query` hides behind exit 0,
+and (for location queries) source-context enrichment plus JSON / Markdown output.
+
+### Choosing a query
+
+```sh
+clang-query-run                       # pick from the library via a menu
+clang-query-run --list                # list library queries and exit
+clang-query-run -f my.query           # run a .query file
+clang-query-run -q 'match cxxThrowExpr().bind("t")'   # run an inline query
+```
+
+The library lives in **`clang-queries/`** beside the script. Each `.query` file
+can carry `# title:` / `# description:` header comments, which the menu and
+`--list` display. Running with no `-f`/`-q` shows the menu; pick by number.
+
+Ships with `path-string.query` — every `.string()`/`.generic_string()` call
+whose receiver is genuinely a `std::filesystem::path` (an encoding-hazard audit).
+To add your own, drop a `.query` file in `clang-queries/`; see
+[`clang-queries/README.md`](clang-queries/README.md) for the header format,
+output modes, and rubric sidecars.
+
+### Output modes
+
+The runner adapts to the query's `set output` mode:
+
+- **`diag`** (default) — locations. Each `.bind(...)` match yields a
+  `file:line:col`, which the runner dedups, enriches with source context, and
+  can render as `--json` or a `--report` packet.
+- **`dump` / `print` / `detailed-ast`** — AST text. The runner streams
+  `clang-query`'s raw output per TU (still parallelised, still flagging parse
+  failures), since there are no source locations to aggregate. `--json` /
+  `--report` aren't available for these.
+
+### The investigation packet
+
+`--report` emits a self-contained Markdown file you hand to an AI: a **rubric**
+(the task framing) followed by every match with `file:line:col` and source
+context (`>>` marks the hit line). The rubric comes from a
+**`<query-stem>.rubric.md`** sidecar next to the query if one exists, else a
+generic "analyse these findings" header. So `path-string.query` pairs with
+`path-string.rubric.md`, which buckets each site (display/logging, URI
+construction, external API, test/comparison) and explains the C++23 `char8_t`
+encoding hazard.
+
+### Usage
+
+```sh
+clang-query-run [options]            # or: uv run clang-query-run.py [options]
+```
+
+First generate a compile DB for the target repo:
+
+```sh
+# CMake
+cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# Non-CMake builds (brew install bear)
+bear -- make
+```
+
+Then, from anywhere in the project (the build DB is **auto-detected** — see
+below):
+
+```sh
+# AI investigation packet (Markdown) — the path-string audit
+clang-query-run -f clang-queries/path-string.query --report > investigation.md
+
+# Plain list of match locations
+clang-query-run -f clang-queries/path-string.query
+
+# point at the build dir explicitly when it's somewhere unusual
+clang-query-run -f clang-queries/path-string.query -p out --json > hits.json
+```
+
+By default it finds the `compile_commands.json` itself. First it probes the
+common build-dir names (`build`, `out`, `cmake-build-debug`, …) while walking up
+from the current directory to the repo root (so it works from a subdirectory
+too); if that misses, it falls back to a bounded recursive scan down from the
+root, which catches DBs buried in deep, oddly named build trees like
+`.build/core/darwin/arm64/release/`. When several exist the **newest** wins (and
+the rest are noted). The chosen DB is printed to stderr. Use `-p` to point at a
+specific build dir — or straight at the JSON file — to override.
+
+| Option | Effect |
+| ------ | ------ |
+| `-f`, `--query-file FILE` | Run a `.query` file. |
+| `-q`, `--query 'QUERY'` | Run an inline query string. |
+| `--list` | List library queries and exit. |
+| `-p`, `--build-dir DIR` | Build dir containing `compile_commands.json`, or a path straight to the file (default: auto-detect). |
+| `--report` | Emit the Markdown investigation packet for an AI (diag queries). |
+| `--json` | Emit structured records (location + source context) instead of a plain list (diag queries). |
+| `-c`, `--context N` | Source context lines on each side of a hit (default 6). |
+| `-j`, `--jobs N` | Parallel `clang-query` workers (default: CPU count). |
+| `--clang-query PATH` | Path to the `clang-query` binary. |
+| `--extra-arg ARG` | Extra clang arg, repeatable (see the macOS note below). |
+| `--show-errors` | Print the TUs `clang-query` failed to parse. |
+
+Run `uv run clang-query-run.py --help` for the full reference.
+
+### macOS gotcha (read this)
+
+`clang-query` parses each translation unit with **its own** headers. If the
+`compile_commands.json` was produced by **Apple `clang++`** but you run
+**homebrew `clang-query`**, the standard-library headers won't match and the TU
+fails with `fatal error: 'filesystem' file not found`. A silent parse failure
+means *missed* findings, not false ones — so don't trust a clean run that also
+reports parse errors (**rerun with `--show-errors`** to see which TUs failed).
+
+Pick one fix:
+
+- **Build the compile DB with the matching toolchain** (simplest) —
+  `-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++`; or
+- **Reconcile headers at query time** without rebuilding:
+  `--extra-arg=-isysroot=$(xcrun --show-sdk-path)
+  --extra-arg=-resource-dir=$(clang -print-resource-dir)`.
+
+Also note `clang-query` is often a shell **alias**, which a Python subprocess
+can't see; the script falls back to `/opt/homebrew/opt/llvm/bin/clang-query`, or
+override with `--clang-query`.
+
+### Writing a query
+
+A `.query` file is plain `clang-query` script. To collect locations, set `diag`
+output and **bind** a node — the bound node's location is what gets reported:
+
+```
+# title: throw-expression audit
+# description: every throw site in the project
+set output diag
+match cxxThrowExpr().bind("throw")
+```
+
+[`clang-queries/README.md`](clang-queries/README.md) is the full contributor
+guide — header format, output modes, rubric sidecars, and `path-string.query`
+as a template for type-aware matchers.
+
+**Requirements:** Python 3.8+ (standard library only; no dependencies),
+`clang-query` (`brew install llvm`), a `compile_commands.json` for the target
+repo, and the `clang-queries/` directory beside the script.

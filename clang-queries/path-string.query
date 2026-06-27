@@ -1,0 +1,26 @@
+# title: std::filesystem::path .string() audit
+# description: .string()/.generic_string() calls on a genuine std::filesystem::path (encoding-hazard audit)
+
+set output diag
+set bind-root false
+
+# Match .string()/.generic_string() referring to a method of
+# std::filesystem::path -- across libc++ (std::__1::filesystem /
+# std::__fs::filesystem) and libstdc++ spellings.
+#
+# Matching the memberExpr (not the call) makes the diagnostic location point at
+# the method-name token, so a downstream tool can read the exact method.
+# isExpansionInSystemHeader() drops libc++'s own internal string<>() calls.
+match memberExpr(
+  unless(isExpansionInSystemHeader()),
+  member(
+    cxxMethodDecl(
+      hasAnyName("string", "generic_string"),
+      ofClass(
+        cxxRecordDecl(
+          matchesName("(^|::)(__[a-z0-9]+::)?filesystem::path$")
+        )
+      )
+    )
+  )
+).bind("fs_path_string_call")
