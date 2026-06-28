@@ -4,9 +4,9 @@ A small collection of standalone utility scripts. Each is self-contained — gra
 the one you need and run it. (A few exceptions ship with a companion file: keep
 it beside the script. [`switch-branch.py`](#switch-branchpy) and
 [`delete-branch.py`](#delete-branchpy) share their TUI engine through a
-neighbouring `branch_tui.py` module; [`git-open.py`](#git-openpy) reuses that
-same engine and keeps its editor handling in a neighbouring `editor_config.py`
-module; and
+neighbouring `branch_tui.py` module; [`git-open.py`](#git-openpy) and
+[`git-grep.py`](#git-greppy) reuse that same engine and share their editor
+handling through a neighbouring `editor_config.py` module; and
 [`clang-query-run.py`](#clang-query-runpy) loads its AST matchers from a
 neighbouring `clang-queries/` directory.) Details for each are below.
 
@@ -20,6 +20,7 @@ neighbouring `clang-queries/` directory.) Details for each are below.
 | [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
 | [`delete-branch.py`](#delete-branchpy) | Interactively check off Git branches (local and remote) — even whole folders — and delete them. |
 | [`docx-runs.py`](#docx-runspy) | Resolve and report the language of every text run in a `.docx`, with per-character script classification. |
+| [`git-grep.py`](#git-greppy) | Interactively `git grep`, browse the hits in a folder tree, and open one at its line in your editor. |
 | [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex in a folder tree and open it in your editor. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
@@ -1415,4 +1416,90 @@ Exit status: `0` you quit normally (whether or not you opened anything) ·
 
 **Requirements:** Python 3.11+ (standard library only — `tomllib` reads the
 config), Git on `PATH`, and the `branch_tui.py` and `editor_config.py` modules
-beside it.
+beside it (the latter shared with `git-grep.py`).
+
+---
+
+## `git-grep.py`
+
+A full-screen, **interactive front end for `git grep`**: type a pattern, see
+every matching line gathered into a collapsible tree of files, then hit `Enter`
+to jump straight to that line in your editor. Open as many hits as you like —
+the browser stays put until you quit. **Modal**, like vim.
+
+**PATTERN mode** (where you land with no argument):
+
+| Key | Action |
+| --- | ------ |
+| *type* | the `git grep` pattern (a basic regex, as `git grep` takes it) |
+| `Enter` | run `git grep` and drop into BROWSE mode on the hits |
+| `↑` / `↓` | move the highlight through the current results |
+| `Esc` | switch to BROWSE mode to navigate with `j`/`k` (clears a no-match pattern, or quits at an empty prompt) |
+| `Tab` | toggle **case-insensitive** (`-i`) matching |
+| `Backspace` | edit the pattern |
+
+**BROWSE mode** (where you land when you pass a pattern, or after `Enter`):
+
+| Key | Action |
+| --- | ------ |
+| `j` / `k` or `↑` / `↓` | move the highlight cursor |
+| `g` / `G` | jump to the top / bottom |
+| `h` / `←` | hop up to the parent folder / file |
+| `l` / `→` | expand / step into a folder or file |
+| *digits* | jump the cursor to a match by its **number** |
+| `Enter` | open the match under the cursor **at its line** (on a folder/file row, fold it) |
+| `Tab` | toggle case-insensitive (`-i`) and re-run |
+| `/` | return to PATTERN mode to grep for something else |
+| `q` / `Esc` | quit |
+
+Matching lines are grouped under their file, and files nest in a **folder tree**
+split on `/`, so hits in `src/app/main.c` and `src/lib/parse.c` sit under a
+`src/` folder you can collapse. Everything starts expanded, with each file
+showing its match count. `git grep` is run at the **repository root**, so it
+works from any subdirectory and opens files by their full path.
+
+The editor — and **how to open it at a line** — come from the same
+`.git-open-config` that git-open uses; see
+[Configuring the editor](#configuring-the-editor) above.
+
+### Usage
+
+Run it from inside the repository:
+
+```sh
+# start at an empty prompt, then type a pattern and press Enter
+git-grep
+
+# grep immediately for a pattern
+git-grep 'def main'
+
+# start case-insensitive (toggle later with Tab)
+git-grep -i todo
+```
+
+or invoke the script directly:
+
+```sh
+python git-grep.py [-i] [pattern]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `-i`, `--ignore-case` | Start with case-insensitive matching. |
+
+### Notes & caveats
+
+- Results are **not** live — `git grep` runs when you press `Enter`, so it stays
+  snappy on big repos. Re-run anytime by editing the pattern.
+- Uses `git grep -n -I -z`, so binary files are skipped and the output parses
+  cleanly even when paths contain colons. "No matches" (`git grep` exit `1`) is
+  normal; a real error (e.g. an invalid regex) is reported in the footer.
+- Same terminal behavior as git-open: alternate screen over `stderr`, raw-mode
+  `stdin`, and it steps aside while your editor runs.
+
+Exit status: `0` you quit normally (whether or not you opened anything) ·
+`1` not inside a Git repository, or not an interactive terminal.
+
+**Requirements:** Python 3.11+ (standard library only), Git on `PATH`, and the
+`branch_tui.py` and `editor_config.py` modules beside it (both shared with
+`git-open.py`).
