@@ -1,10 +1,12 @@
 # scripts
 
 A small collection of standalone utility scripts. Each is self-contained — grab
-the one you need and run it. (Two exceptions ship with a companion file: keep it
-beside the script. [`switch-branch.py`](#switch-branchpy) and
+the one you need and run it. (A few exceptions ship with a companion file: keep
+it beside the script. [`switch-branch.py`](#switch-branchpy) and
 [`delete-branch.py`](#delete-branchpy) share their TUI engine through a
-neighbouring `branch_tui.py` module, and
+neighbouring `branch_tui.py` module; [`git-open.py`](#git-openpy) reuses that
+same engine and keeps its editor handling in a neighbouring `editor_config.py`
+module; and
 [`clang-query-run.py`](#clang-query-runpy) loads its AST matchers from a
 neighbouring `clang-queries/` directory.) Details for each are below.
 
@@ -18,6 +20,7 @@ neighbouring `clang-queries/` directory.) Details for each are below.
 | [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
 | [`delete-branch.py`](#delete-branchpy) | Interactively check off Git branches (local and remote) — even whole folders — and delete them. |
 | [`docx-runs.py`](#docx-runspy) | Resolve and report the language of every text run in a `.docx`, with per-character script classification. |
+| [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex in a folder tree and open it in your editor. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
@@ -1311,3 +1314,105 @@ as a template for type-aware matchers.
 **Requirements:** Python 3.8+ (standard library only; no dependencies),
 `clang-query` (`brew install llvm`), a `compile_commands.json` for the target
 repo, and the `clang-queries/` directory beside the script.
+
+---
+
+## `git-open.py`
+
+A full-screen, **interactive file finder** for a Git repo: type a regular
+expression, watch the matching tracked files arrange themselves into a
+collapsible **folder tree**, and hit `Enter` to open the one you want in your
+editor. Open as many as you like — the picker stays put until you quit. The UI
+is **modal**, like vim.
+
+**PATTERN mode** (where you land with no argument — the "insert" mode):
+
+| Key | Action |
+| --- | ------ |
+| *type* | a **regular expression**; the file list filters live (case-insensitive) |
+| `↑` / `↓` | move the highlight through the matches |
+| `Enter` | open the highlighted file |
+| `Esc` or `Tab` | switch to BROWSE mode to navigate with `j`/`k` (`Esc` on an empty prompt quits) |
+| `Backspace` | edit the expression |
+
+**BROWSE mode** (where you land when you pass a pattern, or after `Esc`/`Tab`):
+
+| Key | Action |
+| --- | ------ |
+| `j` / `k` or `↑` / `↓` | move the highlight cursor |
+| `g` / `G` | jump to the top / bottom |
+| `h` / `←` | hop up to the parent folder |
+| `l` / `→` | expand / step into a folder |
+| *digits* | jump the cursor to a file by its **number** |
+| `Enter` | open the file under the cursor (on a folder, fold it) |
+| `/` or `Tab` | return to PATTERN mode to search for something else |
+| `q` / `Esc` | quit |
+
+Tracked files come from `git ls-files` run at the **repository root**, so the
+whole repo is searchable no matter which subdirectory you launch from, and the
+file opens by its full path. Paths are split on `/` into the folder tree, so
+`src/app/main.c` and `src/app/util.c` tuck under a `src/ › app/` folder; while a
+pattern is active, every folder that holds a match is shown expanded.
+
+### Configuring the editor
+
+Both git-open and git-grep read the same TOML file, **`.git-open-config`**, kept
+beside the scripts and **gitignored** so each clone sets its own. The first run
+creates it for you, pre-filled with `vim`:
+
+```toml
+editor = "vim"
+line   = "+{line} {file}"
+```
+
+- **`editor`** is run as a shell-style command. git-open appends the file path.
+  With no `editor` key (or no config file) it falls back to `$VISUAL`, then
+  `$EDITOR`, then a platform default. git-open ignores `line` — it opens whole
+  files.
+- **`line`** tells git-grep how to open a file **at a line**: it is split
+  shell-style and `{file}`, `{line}`, `{column}` are substituted into the pieces
+  (so a path with spaces stays a single argument).
+
+| Editor | `editor` | `line` |
+| ------ | -------- | ------ |
+| Vim / Neovim | `"vim"` | `"+{line} {file}"` |
+| VS Code | `"code -g"` | `"{file}:{line}:{column}"` |
+| Sublime Text | `"subl"` | `"{file}:{line}:{column}"` |
+| Emacs (client) | `"emacsclient -nw"` | `"+{line} {file}"` |
+
+### Usage
+
+Run it from inside the repository:
+
+```sh
+# start at an empty prompt, then type a regex
+git-open
+
+# open straight onto the matches for a pattern
+git-open '\.py$'
+```
+
+or invoke the script directly:
+
+```sh
+python git-open.py [pattern]
+```
+
+### Notes & caveats
+
+- The first match is **not** auto-opened — even a single hit shows in the
+  picker, so you can keep searching and opening without relaunching.
+- It draws on the **alternate screen** over `stderr` and reads keys in raw mode
+  from `stdin`; both must be a terminal (piping in or out prints an error). While
+  your editor runs, the picker steps off the screen and restores itself when the
+  editor exits.
+- **No third-party dependencies** — the TUI is hand-rolled with raw terminal
+  mode and ANSI escapes (no `curses`), so it runs on **macOS, Linux, and
+  Windows** (Windows 10+ console, VT mode enabled automatically).
+
+Exit status: `0` you quit normally (whether or not you opened anything) ·
+`1` not inside a Git repository, or not an interactive terminal.
+
+**Requirements:** Python 3.11+ (standard library only — `tomllib` reads the
+config), Git on `PATH`, and the `branch_tui.py` and `editor_config.py` modules
+beside it.

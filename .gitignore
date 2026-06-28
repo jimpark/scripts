@@ -1,3 +1,4 @@
 .DS_Store
 rapid_mlx.log
 __pycache__/
+.git-open-config
