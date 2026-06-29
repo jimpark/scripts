@@ -12,19 +12,19 @@ The picker is *modal*, in the spirit of vim:
   PATTERN mode (where you land with no argument) -- the "insert" mode
     type                     a regular expression; the file list filters live
     Up / Down                move the highlight through the matches
-    Enter                    open the highlighted file
-    Esc  or  Tab             switch to BROWSE mode to navigate with j/k
+    Enter  Tab  or  Esc      switch to BROWSE mode to navigate with j/k
                              (Esc on an empty prompt quits)
     Backspace                edit the expression
 
-  BROWSE mode (where you land when you pass a pattern, or after Esc/Tab)
+  BROWSE mode (where you land when you pass a pattern, or after Enter/Tab/Esc)
     j / k  or  Up / Down     move the highlight cursor
     g / G                    jump to the top / bottom
     h / Left                 hop up to the parent folder
     l / Right                expand / step into a folder
     <digits>                 jump the cursor to a file by its number
     Enter                    open the file under the cursor (folder: fold it)
-    /  or  Tab               return to PATTERN mode to search for something else
+    Tab                      return to PATTERN mode to edit the expression
+    /                        clear the pattern and start a fresh search
     q / Esc                  quit
 
 Tracked file paths are split on "/" into a **folder tree**, so `src/app/main.c`
@@ -270,9 +270,9 @@ class FileFinder(object):
 
     def _handle_pattern(self, key, screen):
         # PATTERN mode is the "insert" mode: you type a regex, the list filters
-        # live, the arrows move the highlight, Enter opens, and Esc/Tab hand off
-        # to BROWSE mode for vim-style j/k navigation.
-        if key in ("ESC", "TAB"):
+        # live, the arrows move the highlight, and Enter/Tab/Esc hand off to
+        # BROWSE mode for vim-style j/k navigation.
+        if key in ("ENTER", "ESC", "TAB"):
             if self.rows:
                 self._to_browse()        # commit the filter, start navigating
             elif self.query:
@@ -280,8 +280,6 @@ class FileFinder(object):
                 self.cur_id = None
             elif key == "ESC":
                 return False             # empty prompt + Esc: quit
-        elif key == "ENTER":
-            self.open_current(screen)    # open the highlighted file
         elif key == "BACKSPACE":
             self.query = self.query[:-1]
             self.cur_id = None
@@ -313,8 +311,12 @@ class FileFinder(object):
             self.collapse()
         elif key in ("RIGHT", "l"):
             self.expand()
-        elif key in ("/", "TAB"):
+        elif key == "TAB":
             self.mode = "pattern"        # back to editing the regex
+        elif key == "/":
+            self.query = ""              # clear it and start a fresh search
+            self.cur_id = None
+            self.mode = "pattern"
         elif key == "ENTER":
             self.open_current(screen)
         elif key == "BACKSPACE":
@@ -344,10 +346,10 @@ class FileFinder(object):
         if self.mode == "pattern":
             if self.query:
                 tail = "  (literal)" if self.bad_regex else ""
-                return (" /{0}{1}    ↑↓ move · Enter open · Esc/Tab navigate · ^C quit"
+                return (" /{0}{1}    ↑↓ move · Enter/Tab/Esc navigate · ^C quit"
                         .format(self.query, tail))
-            return " Type a regex to find files    Enter open · Esc/Tab navigate · ^C quit"
-        base = " j/k ↑↓ move · g/G ends · Enter open · / Tab search · q quit"
+            return " Type a regex to find files    Enter/Tab/Esc navigate · ^C quit"
+        base = " j/k ↑↓ move · g/G ends · Enter open · Tab edit · / new · q quit"
         return base + ("    " + self.status if self.status else "")
 
     def render(self):
