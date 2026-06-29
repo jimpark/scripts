@@ -1446,11 +1446,49 @@ the browser stays put until you quit. **Modal**, like vim.
 | `g` / `G` | jump to the top / bottom |
 | `h` / `←` | hop up to the parent folder / file |
 | `l` / `→` | expand / step into a folder or file |
-| *digits* | jump the cursor to a match by its **number** |
 | `Enter` | open the match under the cursor **at its line** (on a folder/file row, fold it) |
+| `r` | **re-run** the whole stack and refresh the results (handy after editing), keeping your place |
+| `/` | **refine**: filter the current hits with a sub-grep (push a level onto the stack) |
+| `<` | **back up** one level (pop the last filter) |
+| `\` | **start fresh**: clear the whole stack and return to an empty prompt |
+| `0`–`9` | set the **context window** to N lines around each hit (`0` = none) |
+| `+` / `-` | widen / narrow the context (`+` goes past 9; can't narrow below the parent level) |
+| `:N` | jump the cursor to line number **N** — the number shown at the start of each row; `:` again starts a new number, `Enter`/`Esc`/any move closes the prompt |
 | `Tab` | toggle case-insensitive (`-i`) and re-run |
-| `/` | return to PATTERN mode to grep for something else |
 | `q` / `Esc` | quit |
+
+**FILTER mode** (a sub-grep over the current hits; reached with `/` from BROWSE):
+
+| Key | Action |
+| --- | ------ |
+| *type* | a pattern that narrows the visible lines **live**, matched against the file path **and** the line text |
+| `!pattern` | **exclude**: keep the lines that do *not* match |
+| `Enter` | push this filter onto the stack |
+| `Esc` | cancel without pushing |
+| `↑` / `↓` | move through the filtered hits |
+
+### Stacking greps
+
+Because filters **stack**, you can drill down in steps that a single regex can't
+express. Grep `error`, then `/` `handler` to keep only those lines, then `/`
+`!_test.` to drop the test files — the header shows the whole stack as a
+breadcrumb (`error  +handler  -_test.`). `<` pops back up a level at a time and
+`\` wipes the stack to start over. Each filter is matched against the **path and
+the line text** together, so you can narrow by either content or filename. `r`
+re-runs the base `git grep` and re-applies every filter, so after editing you
+see the same view, refreshed.
+
+### Context windows
+
+Each level of the stack carries a **context window** — press `0`–`9` (or `+` /
+`-`) to pull in that many lines around every hit, read straight from the working
+tree and shown **dimmed**. Crucially, those context lines join the **searchable
+set**: the next `/` filter can match on a line that merely sits *near* an earlier
+hit, and that line then becomes the new anchor. A deeper level **inherits** the
+window and can only widen it — never narrow below its parent — so you can grep
+`ALPHA`, widen to `±2` to see what surrounds it, then filter on `BRAVO` that only
+appears two lines down. The header breadcrumb tags each level with its width
+(`ALPHA ±2  +BRAVO ±2`).
 
 Matching lines are grouped under their file, and files nest in a **folder tree**
 split on `/`, so hits in `src/app/main.c` and `src/lib/parse.c` sit under a
