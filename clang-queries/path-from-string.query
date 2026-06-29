@@ -1,0 +1,46 @@
+# title: std::filesystem::path constructed from a narrow string
+# description: fs::path built from std::string / std::string_view (char) — a UTF-8 vs native-encoding hazard on Windows
+
+set output diag
+set bind-root false
+
+# Match a construction of std::filesystem::path whose source argument is a
+# narrow (char) std::string or std::string_view. cxxConstructExpr catches both
+# spellings of the hazard: an explicit `fs::path p(str)` / `fs::path p = str`,
+# and an *implicit* conversion at a call boundary (`void f(const fs::path&);
+# f(str);`). On Windows the char constructor reinterprets the bytes in the
+# active code page rather than as UTF-8, so the right fix is to route the
+# std::string through a helper that converts to std::u8string first.
+#
+# Resolve the path class across libc++ (std::__1::filesystem /
+# std::__fs::filesystem) and libstdc++ spellings, and constrain the source to
+# basic_string / basic_string_view specialized on `char` (so std::wstring,
+# std::u8string, and string literals are correctly left alone).
+match cxxConstructExpr(
+  unless(isExpansionInSystemHeader()),
+  hasDeclaration(
+    cxxConstructorDecl(
+      ofClass(
+        cxxRecordDecl(
+          matchesName("(^|::)(__[a-z0-9]+::)?filesystem::path$")
+        )
+      )
+    )
+  ),
+  hasArgument(0,
+    expr(
+      hasType(
+        qualType(
+          hasCanonicalType(
+            hasDeclaration(
+              classTemplateSpecializationDecl(
+                matchesName("(^|::)(__[a-z0-9]+::)?basic_string(_view)?$"),
+                hasTemplateArgument(0, refersToType(asString("char")))
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+).bind("fs_path_from_string")
