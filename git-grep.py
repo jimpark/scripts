@@ -78,10 +78,17 @@ adapts to any editor (`code -g` wants `{file}:{line}`, vim wants `+{line}`). The
 file is opened by its full path, and git grep is run at the repository root, so
 this works from any subdirectory.
 
+One exception: when run inside the integrated terminal of VS Code, a JetBrains
+IDE (CLion and friends), or Zed, opening a hit hands it to that already-running
+editor -- through a `vscode://` URL or a `clion`/`zed` launcher -- so it lands
+in a new tab there rather than spawning the configured editor. Those hand-offs
+are fire-and-forget, so the browser stays up instead of stepping aside. The
+detection and launching live in editor_ide, shared with git-open.
+
 Runs on macOS, Linux, and Windows using only the standard library (raw terminal
 mode + ANSI escapes; no curses, no third-party packages). Borrows its tree, key
-input, and terminal handling from branch_tui, and its editor handling from
-editor_config.
+input, and terminal handling from branch_tui, its editor handling from
+editor_config, and its host-editor detection from editor_ide.
 
 Exit status:
     0   you quit normally (whether or not you opened anything)
@@ -99,6 +106,7 @@ from branch_tui import (BLUE, BOLD, CLEAR_EOL, CLEAR_EOS, CYAN, HOME, RESET,
                         REVERSE, Node, TerminalSession, build_visible, git,
                         in_git_repo, read_key, term_size)
 from editor_config import load_config, open_args
+from editor_ide import detect_ide
 
 __version__ = "1.0.0"
 
@@ -204,6 +212,8 @@ class GrepBrowser(object):
         self.editor_argv = editor_argv
         self.line_template = line_template
         self.use_color = use_color
+        self.ide = detect_ide()     # editor whose terminal we're in, or None:
+                                    # hand hits to it rather than spawning one
 
         self.query = ""
         self.ignore_case = False
@@ -526,6 +536,19 @@ class GrepBrowser(object):
             return
         m = row["branch"]
         path = os.path.join(self.toplevel, m.file)
+        if self.ide:
+            # Inside an editor's integrated terminal: hand the hit to that
+            # running editor (a URL or CLI launcher that returns at once), so
+            # the browser stays up -- no suspend.
+            try:
+                self.ide.open(path, m.line, m.column)
+                self.status = "opened {0}:{1} in {2}".format(
+                    m.file, m.line, self.ide.label)
+            except FileNotFoundError:
+                self.status = self.ide.open_error()
+            except OSError as exc:
+                self.status = "could not open: {0}".format(exc)
+            return
         argv = open_args(self.editor_argv, self.line_template, path,
                          line=m.line, column=m.column)
         screen.suspend()

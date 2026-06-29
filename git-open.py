@@ -46,10 +46,18 @@ Files come from `git ls-files` run at the repository root, so the whole repo is
 searchable no matter which subdirectory you launch from, and the file opens by
 its full path.
 
+One exception: when run inside the integrated terminal of VS Code, a JetBrains
+IDE (CLion and friends), or Zed, opening a file hands it to that already-running
+editor -- through a `vscode://` URL or a `clion`/`zed` launcher -- so it lands
+in a new tab there rather than spawning the configured editor. Those hand-offs
+are fire-and-forget, so the picker stays up instead of stepping aside. The
+detection and launching live in editor_ide, shared with git-grep.
+
 Runs on macOS, Linux, and Windows using only the standard library (raw terminal
 mode + ANSI escapes; no curses, no third-party packages). Borrows its folder
 tree, key input, and terminal handling from the neighbouring branch_tui module,
-and its editor handling from editor_config.
+its editor handling from editor_config, and its host-editor detection from
+editor_ide.
 
 Exit status:
     0   you quit normally (whether or not you opened anything)
@@ -67,6 +75,7 @@ from branch_tui import (BLUE, BOLD, CLEAR_EOL, CLEAR_EOS, HOME, RESET, REVERSE,
                         TerminalSession, build_tree, build_visible, git,
                         in_git_repo, read_key, term_size)
 from editor_config import load_config
+from editor_ide import detect_ide
 
 __version__ = "1.0.0"
 
@@ -109,6 +118,8 @@ class FileFinder(object):
         self.editor_argv = editor_argv
         self.toplevel = toplevel
         self.use_color = use_color
+        self.ide = detect_ide()     # editor whose terminal we're in, or None:
+                                    # open in it rather than spawning one
 
         self.query = ""
         self.filt = None            # compiled query, or None
@@ -236,11 +247,24 @@ class FileFinder(object):
             else:
                 self.expanded.add(row["node"].path)
             return
-        path = os.path.join(self.toplevel, row["branch"].name)
+        name = row["branch"].name
+        path = os.path.join(self.toplevel, name)
+        if self.ide:
+            # Inside an editor's integrated terminal: open in that running
+            # editor (a URL or CLI launcher that returns at once), so the picker
+            # stays up -- no suspend.
+            try:
+                self.ide.open(path)
+                self.status = "opened {0} in {1}".format(name, self.ide.label)
+            except FileNotFoundError:
+                self.status = self.ide.open_error()
+            except OSError as exc:
+                self.status = "could not open: {0}".format(exc)
+            return
         screen.suspend()
         try:
             subprocess.call(self.editor_argv + [path])
-            self.status = "opened " + row["branch"].name
+            self.status = "opened " + name
         except FileNotFoundError:
             self.status = "editor not found: " + " ".join(self.editor_argv)
         except OSError as exc:
