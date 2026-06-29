@@ -1,14 +1,16 @@
 # std::filesystem::path from narrow string — investigation packet
 
-Each finding below constructs a `std::filesystem::path` from a narrow `char`
-string — `std::string` or `std::string_view` — verified by Clang's AST (the
-source argument's static type is a `char` specialization of `basic_string` /
-`basic_string_view`, not text matching). This includes both explicit
-construction (`fs::path p(s)`, `fs::path p = s`) and *implicit* construction at
-a call boundary (`void f(const fs::path&); f(s);`).
+Each finding below feeds a narrow `char` string — `std::string` or
+`std::string_view` — into a `std::filesystem::path`, verified by Clang's AST
+(the source argument's static type is a `char` specialization of `basic_string`
+/ `basic_string_view`, not text matching). Three shapes are reported:
+- **construction / implicit conversion** — `fs::path p(s)`, `fs::path p = s`,
+  and conversions at a call boundary (`void f(const fs::path&); f(s);`).
+- **mutating member call** — `p.assign(s)` / `p.append(s)` / `p.concat(s)`.
+- **mutating operator** — `p = s` / `p /= s` / `p += s`.
 
 ## The hazard
-`path`'s `char` constructor interprets the bytes in the platform's *native
+`path`'s `char` overloads interpret the bytes in the platform's *native
 narrow* encoding. On POSIX/macOS that is UTF-8, so it round-trips; on **Windows**
 it is the active code page (ACP), so a UTF-8 `std::string` becomes a mojibake or
 lossy path and may fail to open Unicode filenames. The fix is to convert the
