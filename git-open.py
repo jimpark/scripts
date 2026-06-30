@@ -414,7 +414,10 @@ class FileFinder(object):
 
         out.append(self._line("─" * cols, cols, ""))
         out.append(self._line(self._footer()[:cols], cols, ""))
-        sys.stderr.write("".join(out) + CLEAR_EOS)
+        frame = "".join(out)
+        if frame.endswith("\r\n"):
+            frame = frame[:-2]    # no newline on the bottom row → no scroll bounce
+        sys.stderr.write(frame + CLEAR_EOS)
         sys.stderr.flush()
 
     # -- main loop -----------------------------------------------------------
