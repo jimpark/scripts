@@ -13,7 +13,7 @@ The picker is *modal*, in the spirit of vim:
     type                     a regular expression; the file list filters live
     Up / Down                move the highlight through the matches
     Enter  Tab  or  Esc      switch to BROWSE mode to navigate with j/k
-                             (Esc on an empty prompt quits)
+                             (an empty prompt just switches; nothing quits here)
     Backspace                edit the expression
 
   BROWSE mode (where you land when you pass a pattern, or after Enter/Tab/Esc)
@@ -25,7 +25,7 @@ The picker is *modal*, in the spirit of vim:
     Enter                    open the file under the cursor (folder: fold it)
     Tab                      return to PATTERN mode to edit the expression
     /                        clear the pattern and start a fresh search
-    q / Esc                  quit
+    q                        quit (Esc never quits -- it only navigates)
 
 Tracked file paths are split on "/" into a **folder tree**, so `src/app/main.c`
 and `src/app/util.c` tuck under a `src/ > app/` folder. While a pattern is
@@ -303,7 +303,7 @@ class FileFinder(object):
                 self.query = ""          # a no-match query: clear it to retype
                 self.cur_id = None
             elif key == "ESC":
-                return False             # empty prompt + Esc: quit
+                self.mode = "browse"     # empty prompt: drop into BROWSE (q quits)
         elif key == "BACKSPACE":
             self.query = self.query[:-1]
             self.cur_id = None
@@ -321,7 +321,7 @@ class FileFinder(object):
         return True
 
     def _handle_browse(self, key, screen):
-        if key in ("q", "ESC"):
+        if key == "q":
             return False
         if key in ("UP", "k"):
             self.move(-1)

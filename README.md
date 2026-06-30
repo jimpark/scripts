@@ -1335,7 +1335,7 @@ is **modal**, like vim.
 | *type* | a **regular expression**; the file list filters live (case-insensitive) |
 | `↑` / `↓` | move the highlight through the matches |
 | `Enter` | open the highlighted file |
-| `Esc` or `Tab` | switch to BROWSE mode to navigate with `j`/`k` (`Esc` on an empty prompt quits) |
+| `Esc` or `Tab` | switch to BROWSE mode to navigate with `j`/`k` (an empty prompt just switches — nothing quits here) |
 | `Backspace` | edit the expression |
 
 **BROWSE mode** (where you land when you pass a pattern, or after `Esc`/`Tab`):
@@ -1349,7 +1349,7 @@ is **modal**, like vim.
 | *digits* | jump the cursor to a file by its **number** |
 | `Enter` | open the file under the cursor (on a folder, fold it) |
 | `/` or `Tab` | return to PATTERN mode to search for something else |
-| `q` / `Esc` | quit |
+| `q` | quit (`Esc` only navigates — it never quits) |
 
 Tracked files come from `git ls-files` run at the **repository root**, so the
 whole repo is searchable no matter which subdirectory you launch from, and the
@@ -1447,7 +1447,7 @@ the browser stays put until you quit. **Modal**, like vim.
 | *type* | the `git grep` pattern (a basic regex, as `git grep` takes it) |
 | `Enter` | run `git grep` and drop into BROWSE mode on the hits |
 | `↑` / `↓` | move the highlight through the current results |
-| `Esc` | switch to BROWSE mode to navigate with `j`/`k` (clears a no-match pattern, or quits at an empty prompt) |
+| `Esc` | switch to BROWSE mode to navigate with `j`/`k` (clears a no-match pattern; an empty prompt just switches) |
 | `Tab` | toggle **case-insensitive** (`-i`) matching |
 | `Backspace` | edit the pattern |
 
@@ -1468,7 +1468,7 @@ the browser stays put until you quit. **Modal**, like vim.
 | `+` / `-` | widen / narrow the context (`+` goes past 9; can't narrow below the parent level) |
 | `:N` | jump the cursor to line number **N** — the number shown at the start of each row; `:` again starts a new number, `Enter`/`Esc`/any move closes the prompt |
 | `Tab` | toggle case-insensitive (`-i`) and re-run |
-| `q` / `Esc` | quit |
+| `q` | quit (`Esc` only navigates — it never quits) |
 
 **FILTER mode** (a sub-grep over the current hits; reached with `/` from BROWSE):
 

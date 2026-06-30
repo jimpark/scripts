@@ -15,7 +15,7 @@ The picker is *modal*, in the spirit of vim:
     Enter                    run git grep and drop into BROWSE mode on the hits
     Up / Down                move the highlight through the current results
     Esc                      switch to BROWSE mode to navigate with j/k (clears
-                             a no-match pattern, or quits at an empty prompt)
+                             a no-match pattern; an empty prompt just switches)
     Backspace                edit the pattern
     Tab                      toggle case-insensitive (-i) matching
 
@@ -39,7 +39,7 @@ The picker is *modal*, in the spirit of vim:
                              number on each row); Enter/Esc or any move closes
                              the prompt, ':' again starts a new number
     Tab                      toggle case-insensitive (-i) and re-run
-    q / Esc                  quit
+    q                        quit (Esc never quits -- it only navigates)
 
   FILTER mode (a sub-grep over the current hits; reached with / from BROWSE)
     type                     a pattern that narrows the visible lines *live*,
@@ -592,7 +592,7 @@ class GrepBrowser(object):
             elif self.query:
                 self.query = ""          # clear a no-match query to retype
             else:
-                return False             # empty prompt + Esc: quit
+                self.mode = "browse"     # empty prompt: drop into BROWSE (q quits)
         elif key == "ENTER":
             self.search()
         elif key == "BACKSPACE":
@@ -658,7 +658,7 @@ class GrepBrowser(object):
             if key in ("ENTER", "ESC"):
                 return True                  # ... and that key just closes it
 
-        if key in ("q", "ESC"):
+        if key == "q":
             return False
         if key in ("UP", "k"):
             self.move(-1)
@@ -756,7 +756,7 @@ class GrepBrowser(object):
                 hint = ("↑↓ move · Esc navigate" if self.rows else "Esc clear")
                 return (" /{0}    Enter grep · {1} · Tab -i · ^C quit"
                         .format(self.query, hint))
-            return " Type a pattern, Enter to grep    Tab ignore-case · Esc/^C quit"
+            return " Type a pattern, Enter to grep    Tab ignore-case · Esc browse · ^C quit"
         if self.mode == "filter":
             label = "exclude" if self.finput.strip().startswith("!") else "filter"
             n = len(self.matches)
