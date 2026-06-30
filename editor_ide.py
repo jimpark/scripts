@@ -24,6 +24,7 @@ Lives next to the scripts that import it, so `uv run git-open.py` finds it.
 """
 
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -56,7 +57,16 @@ class VsCode(Ide):
         super().__init__("vscode", "VS Code")
 
     def open(self, path, line=1, column=1):
-        _open_url("vscode://file{0}:{1}:{2}".format(path, line, column))
+        # Route `path` through pathlib's own file-URI conversion rather than
+        # concatenating it by hand: on Windows a raw path is "D:\foo\bar.py"
+        # (a drive letter, backslashes, no leading slash), none of which is
+        # valid inside a URI, so the naive "vscode://file" + path silently
+        # produced a URL VS Code's handler couldn't parse. as_uri() forces
+        # forward slashes, adds the leading "/", and percent-encodes spaces
+        # and other special characters -- on POSIX it's already a no-op.
+        file_uri = pathlib.Path(path).as_uri()        # "file:///D:/foo/bar.py"
+        _open_url("vscode://file{0}:{1}:{2}".format(
+            file_uri[len("file://"):], line, column))
 
 
 class JetBrains(Ide):
