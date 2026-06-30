@@ -41,7 +41,8 @@ GREEN, BLUE, CYAN, YELLOW, BOLD = (CSI + "32m", CSI + "1;34m", CSI + "36m",
 def git(args):
     """Run a git command and return the CompletedProcess (text mode)."""
     return subprocess.run(["git"] + args, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, universal_newlines=True)
+                          stderr=subprocess.PIPE, text=True,
+                          encoding="utf-8", errors="replace")
 
 
 def in_git_repo():

@@ -112,11 +112,13 @@ def do_switch(branch, locals_set):
         cmd = ["git", "switch", "-c", branch.local_name, "--track", branch.ref]
         target = branch.local_name
 
-    proc = subprocess.run(cmd, stderr=subprocess.PIPE, universal_newlines=True)
+    proc = subprocess.run(cmd, stderr=subprocess.PIPE, text=True,
+                          encoding="utf-8", errors="replace")
     err = proc.stderr or ""
     if proc.returncode != 0 and ("is not a git command" in err or "unknown switch" in err):
         proc = subprocess.run(_checkout_equivalent(cmd),
-                              stderr=subprocess.PIPE, universal_newlines=True)
+                              stderr=subprocess.PIPE, text=True,
+                              encoding="utf-8", errors="replace")
         err = proc.stderr or ""
 
     if proc.returncode == 0:
