@@ -4,11 +4,12 @@ A small collection of standalone utility scripts. Each is self-contained — gra
 the one you need and run it. (A few exceptions ship with a companion file: keep
 it beside the script. [`switch-branch.py`](#switch-branchpy) and
 [`delete-branch.py`](#delete-branchpy) share their TUI engine through a
-neighbouring `branch_tui.py` module; [`git-open.py`](#git-openpy) and
-[`git-grep.py`](#git-greppy) reuse that same engine and share their editor
-handling through a neighbouring `editor_config.py` module; and
-[`clang-query-run.py`](#clang-query-runpy) loads its AST matchers from a
-neighbouring `clang-queries/` directory.) Details for each are below.
+neighbouring `branch_tui.py` module; [`git-open.py`](#git-openpy),
+[`git-grep.py`](#git-greppy), and [`git-diff.py`](#git-diffpy) reuse that same
+engine and share their editor handling through neighbouring `editor_config.py`
+and `editor_ide.py` modules; and [`clang-query-run.py`](#clang-query-runpy)
+loads its AST matchers from a neighbouring `clang-queries/` directory.) Details
+for each are below.
 
 | Script | What it does |
 | ------ | ------------ |
@@ -20,6 +21,7 @@ neighbouring `clang-queries/` directory.) Details for each are below.
 | [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
 | [`delete-branch.py`](#delete-branchpy) | Interactively check off Git branches (local and remote) — even whole folders — and delete them. |
 | [`docx-runs.py`](#docx-runspy) | Resolve and report the language of every text run in a `.docx`, with per-character script classification. |
+| [`git-diff.py`](#git-diffpy) | Interactively browse `git diff` in a folder tree, search the changes, and open a changed line at its spot. |
 | [`git-grep.py`](#git-greppy) | Interactively `git grep`, browse the hits in a folder tree, and open one at its line in your editor. |
 | [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex in a folder tree and open it in your editor. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
@@ -1381,6 +1383,16 @@ line   = "+{line} {file}"
 | Sublime Text | `"subl"` | `"{file}:{line}:{column}"` |
 | Emacs (client) | `"emacsclient -nw"` | `"+{line} {file}"` |
 
+**Opening inside an editor's terminal.** When you launch git-open, git-grep, or
+git-diff from the **integrated terminal** of VS Code, a JetBrains IDE (CLion and
+friends), or Zed, the file is handed to that *already-running* editor instead of
+the configured one — through a `vscode://` URL or a `clion`/`zed` launcher — so
+it lands in a new tab there. These hand-offs are fire-and-forget, so the picker
+stays up rather than stepping aside. Detection keys off the terminal's
+environment variables (`TERM_PROGRAM`, `TERMINAL_EMULATOR`, `ZED_TERM`) and
+lives in the shared `editor_ide.py` module; everywhere else, the `editor`/`line`
+settings above are used.
+
 ### Usage
 
 Run it from inside the repository:
@@ -1415,8 +1427,9 @@ Exit status: `0` you quit normally (whether or not you opened anything) ·
 `1` not inside a Git repository, or not an interactive terminal.
 
 **Requirements:** Python 3.11+ (standard library only — `tomllib` reads the
-config), Git on `PATH`, and the `branch_tui.py` and `editor_config.py` modules
-beside it (the latter shared with `git-grep.py`).
+config), Git on `PATH`, and the `branch_tui.py`, `editor_config.py`, and
+`editor_ide.py` modules beside it (the latter two shared with `git-grep.py` and
+`git-diff.py`).
 
 ---
 
@@ -1539,5 +1552,127 @@ Exit status: `0` you quit normally (whether or not you opened anything) ·
 `1` not inside a Git repository, or not an interactive terminal.
 
 **Requirements:** Python 3.11+ (standard library only), Git on `PATH`, and the
-`branch_tui.py` and `editor_config.py` modules beside it (both shared with
-`git-open.py`).
+`branch_tui.py`, `editor_config.py`, and `editor_ide.py` modules beside it (the
+latter two shared with `git-open.py` and `git-diff.py`).
+
+---
+
+## `git-diff.py`
+
+A full-screen, **interactive front end for `git diff`**: every changed line
+gathered into a collapsible tree of files, then hit `Enter` to jump straight to
+that line in your editor. Open as many as you like — the browser stays put until
+you quit. **Modal**, like vim, and a sibling of git-grep: where git-grep starts
+from a pattern you type, git-diff starts from the diff itself and lets you
+**search within it**.
+
+Added lines show in green with a leading `+`, removed lines in red with a `-`,
+and the surrounding context **dimmed**; every row is tagged with the line it
+opens at and a `:N` jump number. You land in **BROWSE** mode on the full diff.
+
+Whatever you put after the command is passed **straight through to `git diff`**,
+so the usual selectors work:
+
+```sh
+git-diff                 # unstaged changes (plain `git diff`)
+git-diff --staged        # what's staged for the next commit
+git-diff HEAD            # everything uncommitted (staged + unstaged)
+git-diff main            # working tree vs the `main` branch
+git-diff v1.0 v1.1       # between two commits
+git-diff -- src/         # limit to a path
+```
+
+**BROWSE mode:**
+
+| Key | Action |
+| --- | ------ |
+| `j` / `k` or `↑` / `↓` | move the highlight cursor |
+| `g` / `G` | jump to the top / bottom |
+| `h` / `←` | hop up to the parent folder / file |
+| `l` / `→` | expand / step into a folder or file |
+| `Enter` | open the changed line under the cursor **at its position** (on a folder/file row, fold it) |
+| `r` | **re-run** `git diff` and refresh (handy after editing or staging), keeping your place |
+| `/` | **refine**: filter the current lines with a sub-grep (push a level onto the stack) |
+| `<` | **back up** one level (pop the last filter) |
+| `\` | **start fresh**: drop every filter, show the whole diff again |
+| `0`–`9` | set the diff **context** to N lines (re-runs `git diff -U N`; `0` = only the changed lines) |
+| `+` / `-` | widen / narrow that context (`+` goes past 9) |
+| `:N` | jump the cursor to line number **N** — the number at the start of each row; `:` again starts a new number, `Enter`/`Esc`/any move closes the prompt |
+| `Tab` | toggle **case-insensitive** filter matching |
+| `q` | quit (`Esc` only navigates — it never quits) |
+
+**FILTER mode** (a sub-grep over the current lines; reached with `/` from BROWSE):
+
+| Key | Action |
+| --- | ------ |
+| *type* | a pattern that narrows the visible lines **live**, matched against the file path **and** the line text |
+| `!pattern` | **exclude**: keep the lines that do *not* match |
+| `Enter` | push this filter onto the stack |
+| `Esc` | cancel without pushing |
+| `↑` / `↓` | move through the filtered lines |
+
+### Searching the diff
+
+Filters **stack**, just like git-grep, so you can drill down in steps a single
+regex can't express: `/` `TODO` to keep the lines mentioning it, then `/`
+`!_test.` to drop the test files — the header shows the whole stack as a
+breadcrumb (`working tree  +TODO  -_test.`). `<` pops a level, `\` clears them
+all. Each filter matches the **path and the line text** together.
+
+The diff's own **context lines are part of the searchable set**, so a filter can
+match on something that merely sits *near* a change. Press `0`–`9` (or `+` / `-`)
+to control how many context lines `git diff` hands over: this re-runs `git diff
+-U N`, so widening genuinely pulls *more* surrounding lines in for searching. The
+header shows the current width as `·U N`. `r` re-runs the diff and re-applies
+every filter, so after editing or staging you see the same view, refreshed.
+
+Changed lines are grouped under their file, and files nest in a **folder tree**
+split on `/`, so changes in `src/app/main.c` and `src/lib/parse.c` sit under a
+`src/` folder you can collapse. Everything starts expanded, with each file
+showing its line count. `git diff` is run at the **repository root**, so it works
+from any subdirectory and opens files by their full path.
+
+The editor — and **how to open it at a line** — come from the same
+`.git-open-config` that git-open and git-grep use; see
+[Configuring the editor](#configuring-the-editor) above. A changed line opens at
+its **new-side position**; a *removed* line, which no longer exists, opens at the
+nearest surviving line.
+
+### Usage
+
+Run it from inside the repository:
+
+```sh
+# browse the unstaged diff
+git-diff
+
+# browse what's staged, or a diff against a branch
+git-diff --staged
+git-diff main
+```
+
+or invoke the script directly:
+
+```sh
+python git-diff.py [git diff args...]
+```
+
+### Notes & caveats
+
+- Arguments are forwarded verbatim to `git diff`, so anything it accepts works;
+  an invalid revision is reported in the footer rather than crashing.
+- **Deleted files** and **binary** changes are shown but have nowhere to open to,
+  so `Enter` reports "nothing to open here" on those rows.
+- When diffing **two arbitrary commits** (e.g. `git-diff v1.0 v1.1`), the new
+  side isn't your working tree, so the opened file may not line up exactly — the
+  common cases (working tree, `--staged`, `HEAD`, a branch) all open cleanly.
+- Same terminal behavior as git-open / git-grep: alternate screen over `stderr`,
+  raw-mode `stdin`, and it steps aside while a terminal editor runs (but not for
+  the IDE-terminal hand-offs, which return at once).
+
+Exit status: `0` you quit normally (whether or not you opened anything) ·
+`1` not inside a Git repository, or not an interactive terminal.
+
+**Requirements:** Python 3.11+ (standard library only), Git on `PATH`, and the
+`branch_tui.py`, `editor_config.py`, and `editor_ide.py` modules beside it (all
+shared with `git-open.py` and `git-grep.py`).
