@@ -22,6 +22,7 @@ The picker is *modal*, in the spirit of vim:
   BROWSE mode (where you land when you pass a pattern, or after Enter)
     j / k  or  Up / Down     move the highlight cursor
     g / G                    jump to the top / bottom
+    n / p                    jump to the first line of the next / previous file
     h / Left                 hop up to the parent folder/file
     l / Right                expand / step into a folder or file
     Enter                    open the match under the cursor at its line
@@ -473,6 +474,65 @@ class GrepBrowser(object):
             self.cursor = max(0, min(index, len(self.rows) - 1))
             self._sync_id()
 
+    def _file_row_indices(self):
+        return [i for i, r in enumerate(self.rows)
+                if r["type"] == "folder" and is_file_node(r["node"])]
+
+    def _owning_file_index(self, idx):
+        """Row index of the file row that owns rows[idx] (itself, if it already
+        is one), or None when the cursor sits on a plain directory folder."""
+        row = self.rows[idx]
+        if row["type"] == "folder" and is_file_node(row["node"]):
+            return idx
+        depth = row["depth"]
+        for i in range(idx - 1, -1, -1):
+            if self.rows[i]["depth"] < depth:
+                parent = self.rows[i]
+                return i if (parent["type"] == "folder" and
+                            is_file_node(parent["node"])) else None
+        return None
+
+    def _goto_file(self, file_idx):
+        """Land the cursor on the first line under the file at file_idx,
+        expanding it first if it's currently folded."""
+        row = self.rows[file_idx]
+        if not row["expanded"]:
+            self.expanded.add(row["node"].path)
+            file_id = row["id"]
+            self.rebuild()
+            file_idx = next(i for i, r in enumerate(self.rows) if r["id"] == file_id)
+        target = file_idx
+        if target + 1 < len(self.rows) and \
+                self.rows[target + 1]["depth"] > self.rows[target]["depth"]:
+            target += 1
+        self.move_to(target)
+
+    def next_file(self):
+        files = self._file_row_indices()
+        if not files:
+            return
+        anchor = self._owning_file_index(self.cursor)
+        if anchor is None:
+            anchor = self.cursor
+        nxt = next((i for i in files if i > anchor), None)
+        if nxt is None:
+            self.status = "already on the last file"
+            return
+        self._goto_file(nxt)
+
+    def prev_file(self):
+        files = self._file_row_indices()
+        if not files:
+            return
+        anchor = self._owning_file_index(self.cursor)
+        if anchor is None:
+            anchor = self.cursor
+        earlier = [i for i in files if i < anchor]
+        if not earlier:
+            self.status = "already on the first file"
+            return
+        self._goto_file(earlier[-1])
+
     def jump_to_number(self, buf):
         if not buf:
             return
@@ -672,6 +732,10 @@ class GrepBrowser(object):
             self.collapse()
         elif key in ("RIGHT", "l"):
             self.expand()
+        elif key == "n":
+            self.next_file()
+        elif key == "p":
+            self.prev_file()
         elif key == "/":
             if self.base_matches:
                 self.mode = "filter"     # refine: filter the current hits
@@ -763,8 +827,8 @@ class GrepBrowser(object):
             return (" {0}: {1}    Enter add · ! to exclude · Esc cancel · "
                     "{2} line{3}".format(label, self.finput, n,
                                          "" if n == 1 else "s"))
-        base = (" j/k move · Enter open · / filter · < back · \\ fresh · "
-                "0-9/± context · :N jump · r refresh · q quit")
+        base = (" j/k move · n/p next/prev file · Enter open · / filter · "
+                "< back · \\ fresh · 0-9/± context · :N jump · r refresh · q quit")
         return base + ("    " + self.status if self.status else "")
 
     def render(self):

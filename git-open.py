@@ -19,6 +19,7 @@ The picker is *modal*, in the spirit of vim:
   BROWSE mode (where you land when you pass a pattern, or after Enter/Tab/Esc)
     j / k  or  Up / Down     move the highlight cursor
     g / G                    jump to the top / bottom
+    n / p                    jump to the next / previous file
     h / Left                 hop up to the parent folder
     l / Right                expand / step into a folder
     <digits>                 jump the cursor to a file by its number
@@ -193,6 +194,22 @@ class FileFinder(object):
             self._sync_id()
         self.pending = ""
 
+    def next_file(self):
+        files = [i for i, r in enumerate(self.rows) if r["type"] == "branch"]
+        nxt = next((i for i in files if i > self.cursor), None)
+        if nxt is None:
+            self.status = "already on the last file"
+            return
+        self.move_to(nxt)
+
+    def prev_file(self):
+        files = [i for i, r in enumerate(self.rows) if r["type"] == "branch"]
+        earlier = [i for i in files if i < self.cursor]
+        if not earlier:
+            self.status = "already on the first file"
+            return
+        self.move_to(earlier[-1])
+
     def jump_to_number(self):
         if not self.pending:
             return
@@ -335,6 +352,10 @@ class FileFinder(object):
             self.collapse()
         elif key in ("RIGHT", "l"):
             self.expand()
+        elif key == "n":
+            self.next_file()
+        elif key == "p":
+            self.prev_file()
         elif key == "TAB":
             self.mode = "pattern"        # back to editing the regex
         elif key == "/":
@@ -373,7 +394,8 @@ class FileFinder(object):
                 return (" /{0}{1}    ↑↓ move · Enter/Tab/Esc navigate · ^C quit"
                         .format(self.query, tail))
             return " Type a regex to find files    Enter/Tab/Esc navigate · ^C quit"
-        base = " j/k ↑↓ move · g/G ends · Enter open · Tab edit · / new · q quit"
+        base = (" j/k ↑↓ move · n/p next/prev file · g/G ends · Enter open · "
+                "Tab edit · / new · q quit")
         return base + ("    " + self.status if self.status else "")
 
     def render(self):
