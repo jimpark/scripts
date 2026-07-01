@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """An interactive, full-screen branch *deleter* for Git -- the same vim-style
-picker as switch-branch.py, but instead of switching you tick off as many
+picker as git-switch.py, but instead of switching you tick off as many
 branches as you like (local and remote) and delete them in one go.
 
   NORMAL mode (the default)
@@ -10,7 +10,7 @@ branches as you like (local and remote) and delete them in one go.
     l / Right                expand the folder (or descend into it)
     Space  or  Enter         check / uncheck the branch here; on a folder Enter
                              expands/collapses it while Space checks the whole
-                             folder (so Enter never deletes -- same as switch-branch)
+                             folder (so Enter never deletes -- same as git-switch)
     <digits>                 jump the cursor to a branch by number
     d                        delete everything that's checked (asks first)
     F                        toggle force: git branch -D instead of -d
@@ -40,7 +40,7 @@ to force (`-D`) if you really mean it. Remote deletions are always forced (that
 is how `git push --delete` works).
 
 Runs on macOS, Linux, and Windows using only the standard library. Shares its
-navigation engine with switch-branch.py via the neighbouring branch_tui module.
+navigation engine with git-switch.py via the neighbouring branch_tui module.
 
 Exit status:
     0   deletions ran (or you quit / aborted without deleting)
@@ -110,7 +110,7 @@ class DeletePicker(Picker):
         return None
 
     def on_enter(self):
-        # Enter keeps its switch-branch meaning so it never deletes: open/close a
+        # Enter keeps its git-switch meaning so it never deletes: open/close a
         # folder, or tick/untick a branch. Deletion is on its own key ('d').
         row = self.current_row()
         if row is None:

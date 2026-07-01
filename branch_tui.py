@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Shared building blocks for the interactive branch tools (`switch-branch.py`
+"""Shared building blocks for the interactive branch tools (`git-switch.py`
 and `delete-branch.py`): Git plumbing, the collapsible folder tree, raw-terminal
 key input, and a reusable modal Picker that both scripts subclass.
 
 This is the one place in the repo where two scripts share code rather than each
 being fully self-contained -- the branch picker is large enough that copying it
 twice would be the bigger sin. It lives next to the scripts that import it, so
-`uv run switch-branch.py` (or running the .py directly) finds it on sys.path.
+`uv run git-switch.py` (or running the .py directly) finds it on sys.path.
 
 Standard library only; works on macOS, Linux, and Windows (raw mode + ANSI, no
 curses).

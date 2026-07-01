@@ -130,7 +130,7 @@ def do_switch(branch, locals_set):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        prog="switch-branch.py",
+        prog="git-switch.py",
         description="Interactively pick a Git branch (vim-style) and switch to it.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -156,7 +156,7 @@ def main(argv=None):
         sys.stderr.write("error: not inside a Git repository\n")
         return 1
     if not (sys.stdin.isatty() and sys.stderr.isatty()):
-        sys.stderr.write("error: switch-branch needs an interactive terminal\n")
+        sys.stderr.write("error: git-switch needs an interactive terminal\n")
         return 1
 
     branches, _, _ = get_branches(args.remotes)

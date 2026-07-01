@@ -2,7 +2,7 @@
 
 A small collection of standalone utility scripts. Each is self-contained — grab
 the one you need and run it. (A few exceptions ship with a companion file: keep
-it beside the script. [`switch-branch.py`](#switch-branchpy) and
+it beside the script. [`git-switch.py`](#git-switchpy) and
 [`delete-branch.py`](#delete-branchpy) share their TUI engine through a
 neighbouring `branch_tui.py` module; [`git-open.py`](#git-openpy),
 [`git-grep.py`](#git-greppy), and [`git-diff.py`](#git-diffpy) reuse that same
@@ -24,11 +24,11 @@ for each are below.
 | [`git-diff.py`](#git-diffpy) | Interactively browse `git diff` in a folder tree, search the changes, and open a changed line at its spot. |
 | [`git-grep.py`](#git-greppy) | Interactively `git grep`, browse the hits in a folder tree, and open one at its line in your editor. |
 | [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex in a folder tree and open it in your editor. |
+| [`git-prune.py`](#git-prunepy) | Delete local Git branches that no longer exist on a remote. |
+| [`git-switch.py`](#git-switchpy) | Interactive, vim-style Git branch switcher with a collapsible folder tree and remote branches. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
-| [`prune-branches.py`](#prune-branchespy) | Delete local Git branches that no longer exist on a remote. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
-| [`switch-branch.py`](#switch-branchpy) | Interactive, vim-style Git branch switcher with a collapsible folder tree and remote branches. |
 | [`unicode-clipboard.py`](#unicode-clipboardpy) | Copy Unicode characters to the clipboard by codepoint, so you can paste the untypeable. |
 | [`unicode-info.py`](#unicode-infopy) | Fetch and display Unicode character information for a codepoint. |
 
@@ -231,7 +231,7 @@ cat feed.xml | python html-info.py
 
 ---
 
-## `prune-branches.py`
+## `git-prune.py`
 
 Deletes local Git branches that no longer exist on a remote — handy after remote
 branches have been merged and deleted (e.g. squash-merged PRs), leaving stale
@@ -251,13 +251,13 @@ classic merge commits (see [How "merged" is decided](#how-merged-is-decided)).
 Run it from inside the repository you want to clean up:
 
 ```sh
-prune-branches
+git-prune
 ```
 
 or invoke the script directly:
 
 ```sh
-python prune-branches.py
+python git-prune.py
 ```
 
 You'll see which branches are being kept (unmerged), which will be deleted, and
@@ -271,12 +271,12 @@ a `y/n` prompt; anything other than `y` cancels without changing anything.
 | `--yes` | Skip the confirmation prompt (non-interactive; use with care). |
 
 ```sh
-python prune-branches.py --into main
-python prune-branches.py --remote upstream
-python prune-branches.py --force --yes
+python git-prune.py --into main
+python git-prune.py --remote upstream
+python git-prune.py --force --yes
 ```
 
-Run `python prune-branches.py --help` for the full reference.
+Run `python git-prune.py --help` for the full reference.
 
 ### How "merged" is decided
 
@@ -1000,7 +1000,7 @@ Exit status: `0` success · `1` the file is not a readable `.docx` ·
 
 ---
 
-## `switch-branch.py`
+## `git-switch.py`
 
 A full-screen, **interactive Git branch switcher** in the spirit of `fzf` /
 `lazygit`: it lists your branches, lets you home in on one three different ways,
@@ -1041,13 +1041,13 @@ already exists, it just switches to the local one.
 Run it from inside the repository:
 
 ```sh
-switch-branch [options]
+git-switch [options]
 ```
 
 or invoke the script directly:
 
 ```sh
-python switch-branch.py [options]
+python git-switch.py [options]
 ```
 
 | Option | Effect |
@@ -1055,7 +1055,7 @@ python switch-branch.py [options]
 | `-r`, `--remotes` | Start with remote branches already included. |
 | `--no-color` | Disable colored output (also honors `NO_COLOR`). |
 
-Run `python switch-branch.py --help` for the full key reference.
+Run `python git-switch.py --help` for the full key reference.
 
 ### Notes & caveats
 
@@ -1080,10 +1080,10 @@ failed.
 
 ## `delete-branch.py`
 
-The same vim-style picker as [`switch-branch.py`](#switch-branchpy), but instead
+The same vim-style picker as [`git-switch.py`](#git-switchpy), but instead
 of switching you **check off** as many branches as you like — local *and*
 remote, or whole folders — and delete them in one pass. It shares its entire
-navigation engine with `switch-branch.py` (the folder tree, regex filter,
+navigation engine with `git-switch.py` (the folder tree, regex filter,
 remotes toggle, and all the keys behave identically).
 
 The differences are the checkboxes and what `Enter` does:
@@ -1091,13 +1091,13 @@ The differences are the checkboxes and what `Enter` does:
 | Key | Action |
 | --- | ------ |
 | `Space` | check / uncheck the branch — or the **whole folder** — under the cursor |
-| `Enter` | same meaning as in `switch-branch.py`: expand/collapse a folder, or check/uncheck a branch — it **never deletes** |
+| `Enter` | same meaning as in `git-switch.py`: expand/collapse a folder, or check/uncheck a branch — it **never deletes** |
 | `d` | delete everything that's checked (after a confirmation) |
 | `F` | toggle **force**: `git branch -D` instead of the safe `-d` |
 | *digits* | jump the cursor to a branch by **number** (then `Space`/`Enter` to check it) |
-| `j`/`k`, `g`/`G`, `h`/`l`, `/`, `Tab`, `q` | move, fold, filter, toggle remotes, quit — exactly as in `switch-branch.py` |
+| `j`/`k`, `g`/`G`, `h`/`l`, `/`, `Tab`, `q` | move, fold, filter, toggle remotes, quit — exactly as in `git-switch.py` |
 
-`Enter` deliberately keeps its `switch-branch.py` meaning so muscle memory never
+`Enter` deliberately keeps its `git-switch.py` meaning so muscle memory never
 triggers a delete; deletion lives on its own key, `d`. (While you're typing a
 filter, `d` is part of the expression — press `Esc` first, then `d`; your checks
 are kept.)
@@ -1149,7 +1149,7 @@ branches), or you quit / aborted without deleting · `1` not inside a Git
 repository, not an interactive terminal, or a deletion failed unexpectedly.
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies), Git on
-`PATH`, and the `branch_tui.py` module beside it (shared with `switch-branch.py`).
+`PATH`, and the `branch_tui.py` module beside it (shared with `git-switch.py`).
 
 ---
 

@@ -29,10 +29,10 @@ instructions rather than risk keeping already-merged branches. Pass
 or --force to skip the check.
 
 Examples:
-    prune-branches.py
-    prune-branches.py --into main
-    prune-branches.py --remote upstream
-    prune-branches.py --force --yes
+    git-prune.py
+    git-prune.py --into main
+    git-prune.py --remote upstream
+    git-prune.py --force --yes
 
 Exit status:
     0   success (branches deleted, or nothing to delete)
@@ -141,7 +141,7 @@ def err(*args):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        prog="prune-branches.py",
+        prog="git-prune.py",
         description="Delete local Git branches that no longer exist on a remote.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
