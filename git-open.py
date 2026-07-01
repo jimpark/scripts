@@ -122,6 +122,7 @@ class FileFinder(object):
         self.ide = detect_ide()     # editor whose terminal we're in, or None:
                                     # open in it rather than spawning one
 
+        self.root = build_tree(files)   # the file tree, built once and reused
         self.query = ""
         self.filt = None            # compiled query, or None
         self.bad_regex = False      # query was invalid; matched literally
@@ -133,6 +134,8 @@ class FileFinder(object):
         self.top = 0                # scroll offset
         self.rows = []
         self.status = ""            # transient one-line message in the footer
+        self.dirty = True           # rows need rebuilding before the next render
+        self._count = 0             # cached number of matching file rows
 
     # -- building the visible rows ------------------------------------------
     def _compile_filter(self):
@@ -147,14 +150,16 @@ class FileFinder(object):
             self.bad_regex = True
 
     def rebuild(self):
+        # O(all files); the run loop only calls it when `dirty` marks a real
+        # change (the query, mostly) -- not on plain cursor moves.
         self._compile_filter()
         # Nothing is shown until there's a pattern -- the empty screen is the
         # prompt. With a pattern, every folder holding a match shows expanded.
         if self.query:
-            root = build_tree(self.files)
-            self.rows = build_visible(root, self.expanded, self.filt)
+            self.rows = build_visible(self.root, self.expanded, self.filt)
         else:
             self.rows = []
+        self._count = sum(1 for r in self.rows if r["type"] == "branch")
 
         if self.cur_id is not None:
             for i, row in enumerate(self.rows):
@@ -167,15 +172,13 @@ class FileFinder(object):
             self.cursor = self._first_file_index()
         self.cursor = max(0, min(self.cursor, len(self.rows) - 1)) if self.rows else 0
         self.cur_id = self.rows[self.cursor]["id"] if self.rows else None
+        self.dirty = False
 
     def _first_file_index(self):
         for i, row in enumerate(self.rows):
             if row["type"] == "branch":
                 return i
         return 0
-
-    def _match_count(self):
-        return sum(1 for r in self.rows if r["type"] == "branch")
 
     # -- cursor movement -----------------------------------------------------
     def _sync_id(self):
@@ -297,9 +300,17 @@ class FileFinder(object):
         if key == "EOF":
             return False
         self.status = ""
+        # The visible rows depend only on the query and the hand-opened folders;
+        # if a key changes either, mark for a rebuild. Plain cursor moves don't,
+        # so navigation skips the (whole-tree) rebuild.
+        before = (self.query, len(self.expanded))
         if self.mode == "pattern":
-            return self._handle_pattern(key, screen)
-        return self._handle_browse(key, screen)
+            result = self._handle_pattern(key, screen)
+        else:
+            result = self._handle_browse(key, screen)
+        if (self.query, len(self.expanded)) != before:
+            self.dirty = True
+        return result
 
     def _to_browse(self):
         """Leave typing and go navigate the results with j/k. Land on a file row
@@ -409,7 +420,7 @@ class FileFinder(object):
         self.top = max(0, min(self.top, max(0, len(self.rows) - area)))
 
         mode = "PATTERN" if self.mode == "pattern" else "BROWSE"
-        count = self._match_count()
+        count = self._count
         tally = "{0} match{1}".format(count, "" if count == 1 else "es") \
             if self.query else "type a pattern"
         header = " {0}    [{1}]    {2}    {3}".format(
@@ -445,7 +456,8 @@ class FileFinder(object):
     # -- main loop -----------------------------------------------------------
     def run(self, screen):
         while True:
-            self.rebuild()
+            if self.dirty:              # rebuild only when the query or opened
+                self.rebuild()          # folders changed -- not on cursor moves
             self.render()
             try:
                 key = read_key()

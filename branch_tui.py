@@ -131,14 +131,97 @@ def _subtree_matches(node, filt, memo):
     return hit
 
 
-def build_visible(root, expanded, filt):
-    """Flatten the tree into the ordered list of rows to draw. A folder is shown
-    expanded when it's in `expanded`, or always while a filter is active (so
-    matches aren't hidden). Branch rows are numbered 1..N in visible order.
+class Row(object):
+    """One visible line in a browser. A slotted object rather than a dict: on a
+    huge tree (git-diff can be hundreds of thousands of rows) we build one per
+    line, and a slotted class is lighter and quicker to allocate than a dict.
 
-    Each row is a dict: type ("folder"/"branch"), depth, node, expanded,
-    number (None for folders), id (stable key for cursor tracking), and for
-    branches, branch."""
+    Fields: type ("folder"/"branch"), depth, node, expanded, number (None for
+    folders; a 1..N counter over branch rows in visible order for the ":N" jump),
+    id (a stable key for cursor tracking across rebuilds), and branch (the
+    Branch/Match/DiffLine on a branch row, None on a folder).
+
+    It supports item access (row["type"]) as well as attribute access so the
+    callers that predate the class keep working unchanged."""
+    __slots__ = ("type", "depth", "node", "expanded", "number", "id", "branch")
+
+    def __init__(self, type, depth, node, expanded, number, id, branch):
+        self.type = type
+        self.depth = depth
+        self.node = node
+        self.expanded = expanded
+        self.number = number
+        self.id = id
+        self.branch = branch
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+    def __eq__(self, other):
+        return isinstance(other, Row) and all(
+            getattr(self, s) == getattr(other, s) for s in self.__slots__)
+
+    __hash__ = None     # rows live in lists and are compared, never hashed
+
+    def __repr__(self):
+        return "Row({0} {1} d{2} #{3})".format(self.type, self.id, self.depth,
+                                                self.number)
+
+
+def _flatten(node, expanded, depth=0):
+    """The unfiltered flatten: rows for `node`'s visible descendants (not node
+    itself), in display order, with `number` left None. A folder is descended
+    into only when its path is in `expanded`. Shared by the full build and by
+    the incremental splice, so the two can't drift apart. Numbers are assigned
+    afterwards by `_renumber`."""
+    rows = []
+
+    def visit(node, depth):
+        for seg in sorted(node.children, key=str.lower):
+            child = node.children[seg]
+            if child.is_folder:
+                is_open = child.path in expanded
+                rows.append(Row("folder", depth, child, is_open, None,
+                                "F:" + child.path, None))
+                if is_open:
+                    visit(child, depth + 1)
+            else:
+                rows.append(Row("branch", depth, child, False, None,
+                                "B:" + child.branch.name, child.branch))
+
+    visit(node, depth)
+    return rows
+
+
+def _renumber(rows, start=0, start_num=0):
+    """Assign branch rows a running 1..N number in visible order, walking from
+    `rows[start]` with the counter continuing at `start_num`. Folder rows keep
+    number=None. Used both for the full build (start=0) and after a splice (from
+    the splice point, so only the tail is retouched)."""
+    n = start_num
+    for i in range(start, len(rows)):
+        r = rows[i]
+        if r.type == "branch":
+            n += 1
+            r.number = n
+
+
+def build_visible(root, expanded, filt):
+    """Flatten the tree into the ordered list of Row rows to draw. A folder is
+    shown expanded when it's in `expanded`, or always while a filter is active
+    (so matches aren't hidden). Branch rows are numbered 1..N in visible order.
+
+    With no filter this is `_flatten` + `_renumber` -- the same path the
+    incremental splice helpers build on. With a filter every folder that holds a
+    match is forced open and non-matching rows are dropped."""
+    if filt is None:
+        rows = _flatten(root, expanded)
+        _renumber(rows)
+        return rows
+
     rows = []
     memo = {}
     counter = [0]
@@ -147,25 +230,57 @@ def build_visible(root, expanded, filt):
         for seg in sorted(node.children, key=str.lower):
             child = node.children[seg]
             if child.is_folder:
-                if filt is not None and not _subtree_matches(child, filt, memo):
+                if not _subtree_matches(child, filt, memo):
                     continue
-                is_open = filt is not None or child.path in expanded
-                rows.append({"type": "folder", "depth": depth, "node": child,
-                             "expanded": is_open, "number": None,
-                             "id": "F:" + child.path})
-                if is_open:
-                    visit(child, depth + 1)
+                rows.append(Row("folder", depth, child, True, None,
+                                "F:" + child.path, None))
+                visit(child, depth + 1)
             else:
                 br = child.branch
-                if filt is not None and not filt.search(br.name):
+                if not filt.search(br.name):
                     continue
                 counter[0] += 1
-                rows.append({"type": "branch", "depth": depth, "node": child,
-                             "expanded": False, "number": counter[0],
-                             "id": "B:" + br.name, "branch": br})
+                rows.append(Row("branch", depth, child, False, counter[0],
+                               "B:" + br.name, br))
 
     visit(root, 0)
     return rows
+
+
+def _preceding_number(rows, index):
+    """The branch number in effect at rows[index]: the number of the nearest row
+    at or before it that carries one (folders carry None), or 0 if there is
+    none. Lets a splice renumber only its tail, continuing the count correctly."""
+    for i in range(index, -1, -1):
+        if rows[i].number is not None:
+            return rows[i].number
+    return 0
+
+
+def splice_expand(rows, index, expanded):
+    """Reveal the subtree of the folder at rows[index] in place: mark it open,
+    insert its now-visible descendants after it, and renumber from there. The
+    folder's path must already be in `expanded`. Mutates `rows`."""
+    folder = rows[index]
+    folder.expanded = True
+    sub = _flatten(folder.node, expanded, folder.depth + 1)
+    rows[index + 1:index + 1] = sub
+    _renumber(rows, index + 1, _preceding_number(rows, index))
+
+
+def splice_collapse(rows, index):
+    """Hide the subtree of the expanded folder at rows[index] in place: drop the
+    contiguous run of deeper rows that follow it, mark it closed, and renumber
+    from there. Mutates `rows`. (The folder's descendants keep their own entries
+    in the caller's `expanded` set, so re-expanding restores their state.)"""
+    folder = rows[index]
+    depth = folder.depth
+    end = index + 1
+    while end < len(rows) and rows[end].depth > depth:
+        end += 1
+    del rows[index + 1:end]
+    folder.expanded = False
+    _renumber(rows, index + 1, _preceding_number(rows, index))
 
 
 def branches_under(branches, folder_path):
@@ -321,6 +436,8 @@ class Picker(object):
         self.remote_names = set()
         self.result = None         # subclass-defined outcome, or None to quit
         self._cache = {}           # show_remotes -> (branches, locals, remotes)
+        self._root_cache = {}      # show_remotes -> the built folder tree
+        self.dirty = True          # rows need rebuilding before the next render
 
     # -- data ----------------------------------------------------------------
     def _branches(self):
@@ -344,7 +461,9 @@ class Picker(object):
 
     def rebuild(self):
         branches, self.locals_set, self.remote_names = self._branches()
-        root = build_tree(branches)
+        if self.show_remotes not in self._root_cache:  # the tree is fixed per
+            self._root_cache[self.show_remotes] = build_tree(branches)  # scope
+        root = self._root_cache[self.show_remotes]
         self._compile_filter()
         self.rows = build_visible(root, self.expanded, self.filt)
         # Keep the cursor on the same item across rebuilds when we can; when we
@@ -362,6 +481,7 @@ class Picker(object):
         self.cursor = max(0, min(self.cursor, len(self.rows) - 1)) if self.rows else 0
         if self.rows:
             self.cur_id = self.rows[self.cursor]["id"]
+        self.dirty = False
 
     def _first_branch_index(self):
         for i, r in enumerate(self.rows):
@@ -451,12 +571,22 @@ class Picker(object):
         if key == "EOF":
             self.result = None
             return False
-        if key == "TAB":
-            self.toggle_remotes()
-            return True
-        if self.mode == "filter":
-            return self._handle_filter(key)
-        return self._handle_normal(key)
+        # The rows depend only on the query, the mode, the local/remote scope,
+        # and which folders are open; if a key touches any of those, mark for a
+        # rebuild. Plain cursor moves touch none, so navigation skips it. The
+        # check is in a finally so it fires no matter how the handler returns.
+        before = (self.query, self.mode, self.show_remotes, frozenset(self.expanded))
+        try:
+            if key == "TAB":
+                self.toggle_remotes()
+                return True
+            if self.mode == "filter":
+                return self._handle_filter(key)
+            return self._handle_normal(key)
+        finally:
+            if (self.query, self.mode, self.show_remotes,
+                    frozenset(self.expanded)) != before:
+                self.dirty = True
 
     def _handle_normal(self, key):
         if key in ("UP", "k"):
@@ -600,7 +730,8 @@ class Picker(object):
         self.rebuild()
         self.initial_cursor()
         while True:
-            self.rebuild()
+            if self.dirty:              # only rebuild when the query/scope/open
+                self.rebuild()          # folders changed -- not on cursor moves
             self.render()
             try:
                 key = read_key()

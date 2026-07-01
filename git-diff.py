@@ -111,7 +111,8 @@ from collections import namedtuple
 
 from branch_tui import (BLUE, BOLD, CLEAR_EOL, CLEAR_EOS, CYAN, GREEN, HOME,
                         RESET, REVERSE, Node, TerminalSession, build_visible,
-                        git, in_git_repo, read_key, term_size)
+                        git, in_git_repo, read_key, splice_collapse,
+                        splice_expand, term_size)
 from editor_config import load_config, open_args
 from editor_ide import detect_ide
 
@@ -287,6 +288,8 @@ class DiffBrowser(object):
         self.top = 0
         self.rows = []
         self.status = ""
+        self.dirty = True           # rows need rebuilding before the next render
+        self._tally = (0, 0, 0)     # cached (adds, dels, files) over self.matches
 
     # -- running git diff ----------------------------------------------------
     def reload(self, preserve=False):
@@ -352,9 +355,22 @@ class DiffBrowser(object):
         """Display a list of diff lines: rebuild the tree and place the cursor
         (on the first line, or the prior one when preserve=True)."""
         self.matches = matches
+        # Tally the whole set once here (not on every render): a huge diff can be
+        # hundreds of thousands of lines, and re-summing them each frame was the
+        # bulk of render's cost.
+        adds = dels = 0
+        files = set()
+        for m in matches:
+            files.add(m.file)
+            if m.kind == "add":
+                adds += 1
+            elif m.kind == "del":
+                dels += 1
+        self._tally = (adds, dels, len(files))
         if not matches:
             self.root, self.expanded, self.rows = None, set(), []
             self.cur_id, self.cursor = None, 0
+            self.dirty = False
             return
         self.root, self.expanded = build_diff_tree(matches)
         if not preserve:
@@ -418,6 +434,9 @@ class DiffBrowser(object):
 
     # -- building the visible rows ------------------------------------------
     def rebuild(self):
+        # Flatten the tree into visible rows. This is O(all changed lines), so on
+        # a large diff it's expensive -- the run loop only calls it when `dirty`
+        # says the tree or expansion actually changed, not on plain cursor moves.
         self.rows = build_visible(self.root, self.expanded, None) if self.root else []
         if self.cur_id is not None:
             for i, row in enumerate(self.rows):
@@ -428,15 +447,13 @@ class DiffBrowser(object):
                 self.cursor = self._first_match_index()
         self.cursor = max(0, min(self.cursor, len(self.rows) - 1)) if self.rows else 0
         self.cur_id = self.rows[self.cursor]["id"] if self.rows else None
+        self.dirty = False
 
     def _first_match_index(self):
         for i, row in enumerate(self.rows):
             if row["type"] == "branch":
                 return i
         return 0
-
-    def _file_count(self):
-        return len({m.file for m in self.matches})
 
     # -- cursor movement -----------------------------------------------------
     def _sync_id(self):
@@ -477,9 +494,7 @@ class DiffBrowser(object):
         row = self.rows[file_idx]
         if not row["expanded"]:
             self.expanded.add(row["node"].path)
-            file_id = row["id"]
-            self.rebuild()
-            file_idx = next(i for i, r in enumerate(self.rows) if r["id"] == file_id)
+            splice_expand(self.rows, file_idx, self.expanded)   # file_idx unmoved
         target = file_idx
         if target + 1 < len(self.rows) and \
                 self.rows[target + 1]["depth"] > self.rows[target]["depth"]:
@@ -537,6 +552,7 @@ class DiffBrowser(object):
             self.move(1)
         else:
             self.expanded.add(row["node"].path)
+            splice_expand(self.rows, self.cursor, self.expanded)
 
     def collapse(self):
         if not self.rows:
@@ -544,6 +560,7 @@ class DiffBrowser(object):
         row = self.rows[self.cursor]
         if row["type"] == "folder" and row["expanded"]:
             self.expanded.discard(row["node"].path)
+            splice_collapse(self.rows, self.cursor)
             return
         path = row["node"].path
         parent = path.rsplit("/", 1)[0] if "/" in path else ""
@@ -570,8 +587,10 @@ class DiffBrowser(object):
         if row["type"] == "folder":
             if row["expanded"]:
                 self.expanded.discard(row["node"].path)
+                splice_collapse(self.rows, self.cursor)
             else:
                 self.expanded.add(row["node"].path)
+                splice_expand(self.rows, self.cursor, self.expanded)
             return
         d = row["branch"]
         if not d.openable:
@@ -787,9 +806,7 @@ class DiffBrowser(object):
         mode = "FILTER" if self.mode == "filter" else "BROWSE"
         ic = "  -i" if self.ignore_case else ""
         if self.matches:
-            files = self._file_count()
-            adds = sum(1 for m in self.matches if m.kind == "add")
-            dels = sum(1 for m in self.matches if m.kind == "del")
+            adds, dels, files = self._tally
             tally = "+{0} -{1} in {2} file{3}".format(
                 adds, dels, files, "" if files == 1 else "s")
         else:
@@ -830,7 +847,8 @@ class DiffBrowser(object):
     # -- main loop -----------------------------------------------------------
     def run(self, screen):
         while True:
-            self.rebuild()
+            if self.dirty:              # only reflatten when the tree/expansion
+                self.rebuild()          # changed -- not on plain cursor moves
             self.render()
             try:
                 key = read_key()
