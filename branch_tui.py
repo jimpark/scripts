@@ -475,8 +475,283 @@ class FramePainter(object):
             sys.stderr.flush()
 
 
+def is_file_node(node):
+    """A file node is a folder whose children are leaves (not subfolders)."""
+    for child in node.children.values():
+        return child.branch is not None
+    return False
+
+
+def repo_toplevel():
+    out = git(["rev-parse", "--show-toplevel"])
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+# ─── the reusable tree browser ───────────────────────────────────────────────
+class TreeBrowser(object):
+    """The machinery every full-screen tree TUI here shares: a flat `rows`
+    view over a Node tree, cursor movement whose position survives rebuilds,
+    folder fold/unfold with in-place row splicing, file-to-file jumps, the
+    frame layout (header, rule, rows with a reversed cursor bar, rule, footer)
+    painted through a diffing FramePainter, and the key loop that drains
+    buffered input so held-key autorepeat can't outrun the terminal.
+
+    Subclasses provide the content: `_build_rows()` (what to show; the
+    default flattens `self.root`), `_row_text`/`_color_for` (how a row
+    looks), `_header`/`_footer`/`_empty_hint` (the chrome), and
+    `_dispatch(key, screen)` (what keys do, beyond the universal ones
+    handle() consumes: Ctrl-L repaint, EOF quit, ignored keys)."""
+
+    title = "?"
+
+    def __init__(self, use_color):
+        self.use_color = use_color
+        self.root = None            # the Node tree, when _build_rows uses one
+        self.expanded = set()       # folder paths currently open
+        self.cursor = 0
+        self.cur_id = None          # row id under the cursor, to survive rebuilds
+        self.top = 0                # scroll offset
+        self.rows = []
+        self.status = ""            # transient one-line message in the footer
+        self.result = None          # what run() returns (pickers set it)
+        self.dirty = True           # rows need rebuilding before the next render
+        self.painter = FramePainter()
+
+    # -- building the visible rows --------------------------------------------
+    def _build_rows(self):
+        return build_visible(self.root, self.expanded, None) if self.root else []
+
+    def rebuild(self):
+        # O(whole tree); the run loop only calls it when `dirty` marks a real
+        # structural change -- not on plain cursor moves -- and expand/collapse
+        # splice the rows in place instead. Keeps the cursor on the same item
+        # when it still exists; otherwise lands on the first branch row rather
+        # than a folder header, so Enter acts on a leaf.
+        self.rows = self._build_rows()
+        if self.cur_id is not None:
+            for i, row in enumerate(self.rows):
+                if row["id"] == self.cur_id:
+                    self.cursor = i
+                    break
+            else:
+                self.cursor = self._first_branch_index()
+        else:
+            self.cursor = self._first_branch_index()
+        self.cursor = max(0, min(self.cursor, len(self.rows) - 1)) if self.rows else 0
+        self.cur_id = self.rows[self.cursor]["id"] if self.rows else None
+        self.dirty = False
+
+    def _first_branch_index(self):
+        for i, row in enumerate(self.rows):
+            if row["type"] == "branch":
+                return i
+        return 0
+
+    def current_row(self):
+        return self.rows[self.cursor] if self.rows else None
+
+    # -- cursor movement -------------------------------------------------------
+    def _sync_id(self):
+        if self.rows:
+            self.cur_id = self.rows[self.cursor]["id"]
+
+    def move(self, delta):
+        if self.rows:
+            self.cursor = max(0, min(self.cursor + delta, len(self.rows) - 1))
+            self._sync_id()
+
+    def move_to(self, index):
+        if self.rows:
+            self.cursor = max(0, min(index, len(self.rows) - 1))
+            self._sync_id()
+
+    def jump_to_number(self, buf):
+        """Move the cursor to the branch row whose displayed number matches
+        the typed digits (clamped to the largest number when it overruns)."""
+        if not buf:
+            return
+        n = int(buf)
+        target = None
+        for i, row in enumerate(self.rows):
+            if row["number"] is not None:
+                target = i
+                if row["number"] >= n:
+                    break
+        if target is not None:
+            self.cursor = target
+            self._sync_id()
+
+    # -- folder open/close -------------------------------------------------------
+    def expand(self):
+        if not self.rows:
+            return
+        row = self.rows[self.cursor]
+        if row["type"] != "folder":
+            return
+        if row["expanded"]:
+            self.move(1)                       # already open -> step inside
+        else:
+            self.expanded.add(row["node"].path)
+            splice_expand(self.rows, self.cursor, self.expanded)
+
+    def collapse(self):
+        if not self.rows:
+            return
+        row = self.rows[self.cursor]
+        if row["type"] == "folder" and row["expanded"]:
+            self.expanded.discard(row["node"].path)
+            splice_collapse(self.rows, self.cursor)
+            return
+        # On a leaf or a closed folder: hop up to the parent folder.
+        path = row["node"].path
+        parent = path.rsplit("/", 1)[0] if "/" in path else ""
+        if not parent:
+            return
+        for i, r in enumerate(self.rows):
+            if r["id"] == "F:" + parent:
+                self.cursor = i
+                self._sync_id()
+                break
+
+    # -- file-to-file jumps ------------------------------------------------------
+    def _file_row_indices(self):
+        return [i for i, r in enumerate(self.rows)
+                if r["type"] == "folder" and is_file_node(r["node"])]
+
+    def _owning_file_index(self, idx):
+        """Row index of the file row that owns rows[idx] (itself, if it already
+        is one), or None when the cursor sits on a plain directory folder."""
+        row = self.rows[idx]
+        if row["type"] == "folder" and is_file_node(row["node"]):
+            return idx
+        depth = row["depth"]
+        for i in range(idx - 1, -1, -1):
+            if self.rows[i]["depth"] < depth:
+                parent = self.rows[i]
+                return i if (parent["type"] == "folder" and
+                            is_file_node(parent["node"])) else None
+        return None
+
+    def _goto_file(self, file_idx):
+        """Land the cursor on the first line under the file at file_idx,
+        expanding it first if it's currently folded."""
+        row = self.rows[file_idx]
+        if not row["expanded"]:
+            self.expanded.add(row["node"].path)
+            splice_expand(self.rows, file_idx, self.expanded)   # file_idx unmoved
+        target = file_idx
+        if target + 1 < len(self.rows) and \
+                self.rows[target + 1]["depth"] > self.rows[target]["depth"]:
+            target += 1
+        self.move_to(target)
+
+    def next_file(self):
+        files = self._file_row_indices()
+        if not files:
+            return
+        anchor = self._owning_file_index(self.cursor)
+        if anchor is None:
+            anchor = self.cursor
+        nxt = next((i for i in files if i > anchor), None)
+        if nxt is None:
+            self.status = "already on the last file"
+            return
+        self._goto_file(nxt)
+
+    def prev_file(self):
+        files = self._file_row_indices()
+        if not files:
+            return
+        anchor = self._owning_file_index(self.cursor)
+        if anchor is None:
+            anchor = self.cursor
+        earlier = [i for i in files if i < anchor]
+        if not earlier:
+            self.status = "already on the first file"
+            return
+        self._goto_file(earlier[-1])
+
+    # -- rendering: the frame layout; subclasses fill in the content ------------
+    def _header(self):
+        raise NotImplementedError
+
+    def _footer(self):
+        raise NotImplementedError
+
+    def _row_text(self, row):
+        raise NotImplementedError
+
+    def _color_for(self, row):
+        return ""
+
+    def _empty_hint(self):
+        return ""
+
+    def render(self):
+        cols, lines_h = term_size()
+        area = max(1, lines_h - 4)
+
+        if self.cursor < self.top:
+            self.top = self.cursor
+        elif self.cursor >= self.top + area:
+            self.top = self.cursor - area + 1
+        self.top = max(0, min(self.top, max(0, len(self.rows) - area)))
+
+        lines = [screen_line(self._header()[:cols], cols,
+                             BOLD if self.use_color else ""),
+                 screen_line("─" * cols, cols, "")]
+
+        window = self.rows[self.top:self.top + area]
+        for i, row in enumerate(window):
+            idx = self.top + i
+            text = self._row_text(row)[:cols]
+            if self.use_color and idx == self.cursor:
+                lines.append(screen_line(text, cols, REVERSE, pad=True))
+            else:
+                lines.append(screen_line(text, cols, self._color_for(row)))
+        if not self.rows:
+            lines.append(screen_line(self._empty_hint(), cols, ""))
+        lines.extend([""] * (area - max(len(window), 0 if self.rows else 1)))
+
+        lines.append(screen_line("─" * cols, cols, ""))
+        lines.append(screen_line(self._footer()[:cols], cols, ""))
+        self.painter.paint(lines, (cols, lines_h))
+
+    # -- key handling / main loop ------------------------------------------------
+    def _dispatch(self, key, screen):
+        raise NotImplementedError
+
+    def handle(self, key, screen=None):
+        if key in ("", "DELETE"):
+            return True
+        if key == "REDRAW":
+            self.painter.reset()     # Ctrl-L: repaint from scratch
+            return True
+        if key == "EOF":
+            return False
+        return self._dispatch(key, screen)
+
+    def run(self, screen=None):
+        while True:
+            if self.dirty:              # only reflatten when the tree/expansion
+                self.rebuild()          # changed -- not on plain cursor moves
+            self.render()
+            # Drain the whole burst of buffered keys before redrawing, so a
+            # held-down key can't queue frames faster than the terminal draws.
+            while True:
+                try:
+                    key = read_key()
+                except KeyboardInterrupt:
+                    self.result = None
+                    return self.result
+                if not self.handle(key, screen):
+                    return self.result
+                if not input_pending():
+                    break
+
+
 # ─── the reusable modal picker ───────────────────────────────────────────────
-class Picker(object):
+class Picker(TreeBrowser):
     """A modal (NORMAL / FILTER) branch picker over the folder tree. Subclasses
     decide what Enter does and may add per-row decorations and extra keys by
     overriding the hook methods near the bottom."""
@@ -484,25 +759,17 @@ class Picker(object):
     title = "Branches"
 
     def __init__(self, show_remotes, use_color):
+        TreeBrowser.__init__(self, use_color)
         self.show_remotes = show_remotes
-        self.use_color = use_color
-        self.expanded = set()      # folder paths the user has opened
         self.query = ""            # current filter expression
         self.filt = None           # compiled query (or None)
         self.bad_regex = False     # query was invalid; using it literally
         self.mode = "normal"       # "normal" | "filter"
         self.pending = ""          # digits typed for number-jump
-        self.cursor = 0
-        self.cur_id = None         # row id under the cursor, to survive rebuilds
-        self.top = 0               # scroll offset
-        self.rows = []
         self.locals_set = set()
         self.remote_names = set()
-        self.result = None         # subclass-defined outcome, or None to quit
         self._cache = {}           # show_remotes -> (branches, locals, remotes)
         self._root_cache = {}      # show_remotes -> the built folder tree
-        self.dirty = True          # rows need rebuilding before the next render
-        self.painter = FramePainter()
 
     # -- data ----------------------------------------------------------------
     def _branches(self):
@@ -524,71 +791,22 @@ class Picker(object):
             self.filt = re.compile(re.escape(self.query), re.IGNORECASE)
             self.bad_regex = True
 
-    def rebuild(self):
+    def _build_rows(self):
         branches, self.locals_set, self.remote_names = self._branches()
         if self.show_remotes not in self._root_cache:  # the tree is fixed per
             self._root_cache[self.show_remotes] = build_tree(branches)  # scope
-        root = self._root_cache[self.show_remotes]
         self._compile_filter()
-        self.rows = build_visible(root, self.expanded, self.filt)
-        # Keep the cursor on the same item across rebuilds when we can; when we
-        # can't (e.g. the filter just changed), land on the first *branch* row
-        # rather than a folder header so Enter acts on a branch.
-        if self.cur_id is not None:
-            for i, r in enumerate(self.rows):
-                if r["id"] == self.cur_id:
-                    self.cursor = i
-                    break
-            else:
-                self.cursor = self._first_branch_index()
-        else:
-            self.cursor = self._first_branch_index()
-        self.cursor = max(0, min(self.cursor, len(self.rows) - 1)) if self.rows else 0
-        if self.rows:
-            self.cur_id = self.rows[self.cursor]["id"]
-        self.dirty = False
-
-    def _first_branch_index(self):
-        for i, r in enumerate(self.rows):
-            if r["type"] == "branch":
-                return i
-        return 0
-
-    def current_row(self):
-        return self.rows[self.cursor] if self.rows else None
+        return build_visible(self._root_cache[self.show_remotes],
+                             self.expanded, self.filt)
 
     # -- cursor movement -----------------------------------------------------
-    def _sync_id(self):
-        if self.rows:
-            self.cur_id = self.rows[self.cursor]["id"]
-
     def move(self, delta):
-        if self.rows:
-            self.cursor = max(0, min(self.cursor + delta, len(self.rows) - 1))
-            self._sync_id()
+        TreeBrowser.move(self, delta)
         self.pending = ""
 
     def move_to(self, index):
-        if self.rows:
-            self.cursor = max(0, min(index, len(self.rows) - 1))
-            self._sync_id()
+        TreeBrowser.move_to(self, index)
         self.pending = ""
-
-    def jump_to_number(self):
-        """Move the cursor to the branch whose number matches the pending
-        digits (clamped to the largest number when it overruns)."""
-        if not self.pending:
-            return
-        n = int(self.pending)
-        target = None
-        for i, r in enumerate(self.rows):
-            if r["number"] is not None:
-                target = i
-                if r["number"] >= n:
-                    break
-        if target is not None:
-            self.cursor = target
-            self._sync_id()
 
     # -- folder open/close ---------------------------------------------------
     def toggle_folder(self, row):
@@ -630,15 +848,7 @@ class Picker(object):
         self.show_remotes = not self.show_remotes
 
     # -- key handling --------------------------------------------------------
-    def handle(self, key):
-        if key in ("", "DELETE"):
-            return True
-        if key == "REDRAW":
-            self.painter.reset()     # Ctrl-L: repaint from scratch
-            return True
-        if key == "EOF":
-            self.result = None
-            return False
+    def _dispatch(self, key, screen):
         # The rows depend only on the query, the mode, the local/remote scope,
         # and which folders are open; if a key touches any of those, mark for a
         # rebuild. Plain cursor moves touch none, so navigation skips it. The
@@ -680,10 +890,10 @@ class Picker(object):
             return self.on_enter()
         elif key == "BACKSPACE":
             self.pending = self.pending[:-1]
-            self.jump_to_number()
+            self.jump_to_number(self.pending)
         elif len(key) == 1 and key.isdigit():
             self.pending += key
-            self.jump_to_number()
+            self.jump_to_number(self.pending)
         else:
             handled = self.on_extra_key(key)
             if handled is not None:
@@ -743,38 +953,17 @@ class Picker(object):
             return CYAN
         return ""
 
-    def render(self):
-        cols, lines_h = term_size()
-        area = max(1, lines_h - 4)
-
-        if self.cursor < self.top:
-            self.top = self.cursor
-        elif self.cursor >= self.top + area:
-            self.top = self.cursor - area + 1
-        self.top = max(0, min(self.top, max(0, len(self.rows) - area)))
-
+    def _header(self):
         scope = "local + remote" if self.show_remotes else "local"
         mode = "FILTER" if self.mode == "filter" else "NORMAL"
-        header = " {0}    [{1}]    ({2}){3}".format(
+        return " {0}    [{1}]    ({2}){3}".format(
             self.title, mode, scope, self.header_extra())
-        lines = [screen_line(header[:cols], cols, BOLD if self.use_color else ""),
-                 screen_line("─" * cols, cols, "")]
 
-        window = self.rows[self.top:self.top + area]
-        for i, row in enumerate(window):
-            idx = self.top + i
-            text = self._row_text(row)[:cols]
-            if self.use_color and idx == self.cursor:
-                lines.append(screen_line(text, cols, REVERSE, pad=True))
-            else:
-                lines.append(screen_line(text, cols, self._color_for(row)))
-        if not self.rows:
-            lines.append(screen_line("  (no branches match)", cols, ""))
-        lines.extend([""] * (area - max(len(window), 0 if self.rows else 1)))
+    def _footer(self):
+        return self.footer()           # the overridable subclass hook
 
-        lines.append(screen_line("─" * cols, cols, ""))
-        lines.append(screen_line(self.footer()[:cols], cols, ""))
-        self.painter.paint(lines, (cols, lines_h))
+    def _empty_hint(self):
+        return "  (no branches match)"
 
     def _filter_suffix(self):
         tail = " (literal)" if self.bad_regex else ""
@@ -784,22 +973,7 @@ class Picker(object):
     def run(self):
         self.rebuild()
         self.initial_cursor()
-        while True:
-            if self.dirty:              # only rebuild when the query/scope/open
-                self.rebuild()          # folders changed -- not on cursor moves
-            self.render()
-            # Drain the whole burst of buffered keys before redrawing, so a
-            # held-down key can't queue frames faster than the terminal draws.
-            while True:
-                try:
-                    key = read_key()
-                except KeyboardInterrupt:
-                    self.result = None
-                    return None
-                if not self.handle(key):
-                    return self.result
-                if not input_pending():
-                    break
+        return TreeBrowser.run(self)
 
     # -- hooks for subclasses ------------------------------------------------
     def on_enter(self):

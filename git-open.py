@@ -72,9 +72,8 @@ import subprocess
 import sys
 from collections import namedtuple
 
-from branch_tui import (BLUE, BOLD, REVERSE, FramePainter, TerminalSession,
-                        build_tree, build_visible, git, in_git_repo,
-                        input_pending, read_key, screen_line, term_size)
+from branch_tui import (BLUE, TerminalSession, TreeBrowser, build_tree,
+                        build_visible, git, in_git_repo, repo_toplevel)
 from editor_config import load_config
 from editor_ide import detect_ide
 
@@ -86,11 +85,6 @@ File = namedtuple("File", "name")
 
 
 # ─── git plumbing ────────────────────────────────────────────────────────────
-def repo_toplevel():
-    out = git(["rev-parse", "--show-toplevel"])
-    return out.stdout.strip() if out.returncode == 0 else None
-
-
 def list_files(toplevel):
     """Every tracked file in the repo, as File items, regardless of cwd."""
     out = git(["-C", toplevel, "ls-files"])
@@ -110,15 +104,15 @@ class Screen(TerminalSession):
 
 
 # ─── the file finder ─────────────────────────────────────────────────────────
-class FileFinder(object):
+class FileFinder(TreeBrowser):
     title = "git-open"
 
     def __init__(self, files, repo_name, editor_argv, toplevel, use_color):
+        TreeBrowser.__init__(self, use_color)
         self.files = files
         self.repo_name = repo_name
         self.editor_argv = editor_argv
         self.toplevel = toplevel
-        self.use_color = use_color
         self.ide = detect_ide()     # editor whose terminal we're in, or None:
                                     # open in it rather than spawning one
 
@@ -127,16 +121,8 @@ class FileFinder(object):
         self.filt = None            # compiled query, or None
         self.bad_regex = False      # query was invalid; matched literally
         self.mode = "pattern"       # "pattern" | "browse"
-        self.expanded = set()       # folder paths opened by hand
         self.pending = ""           # digits typed for number-jump
-        self.cursor = 0
-        self.cur_id = None          # row id under the cursor, to survive rebuilds
-        self.top = 0                # scroll offset
-        self.rows = []
-        self.status = ""            # transient one-line message in the footer
-        self.dirty = True           # rows need rebuilding before the next render
         self._count = 0             # cached number of matching file rows
-        self.painter = FramePainter()
 
     # -- building the visible rows ------------------------------------------
     def _compile_filter(self):
@@ -150,52 +136,22 @@ class FileFinder(object):
             self.filt = re.compile(re.escape(self.query), re.IGNORECASE)
             self.bad_regex = True
 
-    def rebuild(self):
-        # O(all files); the run loop only calls it when `dirty` marks a real
-        # change (the query, mostly) -- not on plain cursor moves.
+    def _build_rows(self):
         self._compile_filter()
         # Nothing is shown until there's a pattern -- the empty screen is the
         # prompt. With a pattern, every folder holding a match shows expanded.
-        if self.query:
-            self.rows = build_visible(self.root, self.expanded, self.filt)
-        else:
-            self.rows = []
-        self._count = sum(1 for r in self.rows if r["type"] == "branch")
-
-        if self.cur_id is not None:
-            for i, row in enumerate(self.rows):
-                if row["id"] == self.cur_id:
-                    self.cursor = i
-                    break
-            else:
-                self.cursor = self._first_file_index()
-        else:
-            self.cursor = self._first_file_index()
-        self.cursor = max(0, min(self.cursor, len(self.rows) - 1)) if self.rows else 0
-        self.cur_id = self.rows[self.cursor]["id"] if self.rows else None
-        self.dirty = False
-
-    def _first_file_index(self):
-        for i, row in enumerate(self.rows):
-            if row["type"] == "branch":
-                return i
-        return 0
+        rows = build_visible(self.root, self.expanded, self.filt) \
+            if self.query else []
+        self._count = sum(1 for r in rows if r["type"] == "branch")
+        return rows
 
     # -- cursor movement -----------------------------------------------------
-    def _sync_id(self):
-        if self.rows:
-            self.cur_id = self.rows[self.cursor]["id"]
-
     def move(self, delta):
-        if self.rows:
-            self.cursor = max(0, min(self.cursor + delta, len(self.rows) - 1))
-            self._sync_id()
+        TreeBrowser.move(self, delta)
         self.pending = ""
 
     def move_to(self, index):
-        if self.rows:
-            self.cursor = max(0, min(index, len(self.rows) - 1))
-            self._sync_id()
+        TreeBrowser.move_to(self, index)
         self.pending = ""
 
     def next_file(self):
@@ -213,20 +169,6 @@ class FileFinder(object):
             self.status = "already on the first file"
             return
         self.move_to(earlier[-1])
-
-    def jump_to_number(self):
-        if not self.pending:
-            return
-        n = int(self.pending)
-        target = None
-        for i, row in enumerate(self.rows):
-            if row["number"] is not None:
-                target = i
-                if row["number"] >= n:
-                    break
-        if target is not None:
-            self.cursor = target
-            self._sync_id()
 
     # -- folder open/close ---------------------------------------------------
     def expand(self):
@@ -295,15 +237,7 @@ class FileFinder(object):
             self.painter.reset()    # the editor owned the screen; repaint it all
 
     # -- key handling --------------------------------------------------------
-    def handle(self, key, screen):
-        """Return False to quit, True to keep going."""
-        if key in ("", "DELETE"):
-            return True
-        if key == "REDRAW":
-            self.painter.reset()     # Ctrl-L: repaint from scratch
-            return True
-        if key == "EOF":
-            return False
+    def _dispatch(self, key, screen):
         self.status = ""
         # The visible rows depend only on the query and the hand-opened folders;
         # if a key changes either, mark for a rebuild. Plain cursor moves don't,
@@ -322,7 +256,7 @@ class FileFinder(object):
         (not a folder header) so the keys act on something selectable."""
         self.mode = "browse"
         if self.rows and self.rows[self.cursor]["type"] == "folder":
-            self.cursor = self._first_file_index()
+            self.cursor = self._first_branch_index()
             self._sync_id()
 
     def _handle_pattern(self, key, screen):
@@ -382,10 +316,10 @@ class FileFinder(object):
             self.open_current(screen)
         elif key == "BACKSPACE":
             self.pending = self.pending[:-1]
-            self.jump_to_number()
+            self.jump_to_number(self.pending)
         elif len(key) == 1 and key.isdigit():
             self.pending += key
-            self.jump_to_number()
+            self.jump_to_number(self.pending)
         return True
 
     # -- rendering -----------------------------------------------------------
@@ -407,62 +341,19 @@ class FileFinder(object):
                 "Tab edit · / new · q quit")
         return base + ("    " + self.status if self.status else "")
 
-    def render(self):
-        cols, lines_h = term_size()
-        area = max(1, lines_h - 4)
-
-        if self.cursor < self.top:
-            self.top = self.cursor
-        elif self.cursor >= self.top + area:
-            self.top = self.cursor - area + 1
-        self.top = max(0, min(self.top, max(0, len(self.rows) - area)))
-
+    def _header(self):
         mode = "PATTERN" if self.mode == "pattern" else "BROWSE"
         count = self._count
         tally = "{0} match{1}".format(count, "" if count == 1 else "es") \
             if self.query else "type a pattern"
-        header = " {0}    [{1}]    {2}    {3}".format(
+        return " {0}    [{1}]    {2}    {3}".format(
             self.title, mode, self.repo_name, tally)
 
-        lines = [screen_line(header[:cols], cols, BOLD if self.use_color else ""),
-                 screen_line("─" * cols, cols, "")]
+    def _color_for(self, row):
+        return BLUE if (self.use_color and row["type"] == "folder") else ""
 
-        window = self.rows[self.top:self.top + area]
-        for i, row in enumerate(window):
-            idx = self.top + i
-            text = self._row_text(row)[:cols]
-            if self.use_color and idx == self.cursor:
-                lines.append(screen_line(text, cols, REVERSE, pad=True))
-            else:
-                color = BLUE if (self.use_color and row["type"] == "folder") else ""
-                lines.append(screen_line(text, cols, color))
-        if not self.rows:
-            hint = "  (matches appear here)" if self.query else ""
-            lines.append(screen_line(hint, cols, ""))
-        drawn = max(len(window), 0 if self.rows else 1)
-        lines.extend([""] * (area - drawn))
-
-        lines.append(screen_line("─" * cols, cols, ""))
-        lines.append(screen_line(self._footer()[:cols], cols, ""))
-        self.painter.paint(lines, (cols, lines_h))
-
-    # -- main loop -----------------------------------------------------------
-    def run(self, screen):
-        while True:
-            if self.dirty:              # rebuild only when the query or opened
-                self.rebuild()          # folders changed -- not on cursor moves
-            self.render()
-            # Drain the whole burst of buffered keys before redrawing, so a
-            # held-down key can't queue frames faster than the terminal draws.
-            while True:
-                try:
-                    key = read_key()
-                except KeyboardInterrupt:
-                    return
-                if not self.handle(key, screen):
-                    return
-                if not input_pending():
-                    break
+    def _empty_hint(self):
+        return "  (matches appear here)" if self.query else ""
 
 
 def main():

@@ -109,10 +109,9 @@ import subprocess
 import sys
 from collections import namedtuple
 
-from branch_tui import (BLUE, BOLD, CYAN, GREEN, REVERSE, FramePainter, Node,
-                        TerminalSession, build_visible, git, in_git_repo,
-                        input_pending, read_key, screen_line, splice_collapse,
-                        splice_expand, term_size)
+from branch_tui import (BLUE, CYAN, GREEN, Node, TerminalSession, TreeBrowser,
+                        git, in_git_repo, is_file_node, repo_toplevel,
+                        splice_collapse, splice_expand)
 from editor_config import load_config, open_args
 from editor_ide import detect_ide
 
@@ -134,11 +133,6 @@ KIND = {" ": "ctx", "+": "add", "-": "del"}
 
 
 # ─── git plumbing ────────────────────────────────────────────────────────────
-def repo_toplevel():
-    out = git(["rev-parse", "--show-toplevel"])
-    return out.stdout.strip() if out.returncode == 0 else None
-
-
 def _strip_prefix(path):
     """Undo git's `a/`/`b/` diff prefixes (and surrounding quotes when git added
     them for an unusual path)."""
@@ -237,13 +231,6 @@ def build_diff_tree(diff_lines):
     return root, folders
 
 
-def is_file_node(node):
-    """A file node is a folder whose children are diff leaves (not subfolders)."""
-    for child in node.children.values():
-        return child.branch is not None
-    return False
-
-
 # ─── terminal session that can step aside for the editor ─────────────────────
 class Screen(TerminalSession):
     """A TerminalSession that can suspend itself (leave raw mode + the alternate
@@ -257,18 +244,18 @@ class Screen(TerminalSession):
 
 
 # ─── the diff browser ────────────────────────────────────────────────────────
-class DiffBrowser(object):
+class DiffBrowser(TreeBrowser):
     title = "git-diff"
 
     def __init__(self, toplevel, repo_name, diff_args, editor_argv,
                  line_template, use_color):
+        TreeBrowser.__init__(self, use_color)
         self.toplevel = toplevel
         self.repo_name = repo_name
         self.diff_args = diff_args
         self.diff_label = " ".join(diff_args) if diff_args else "working tree"
         self.editor_argv = editor_argv
         self.line_template = line_template
-        self.use_color = use_color
         self.ide = detect_ide()     # editor whose terminal we're in, or None:
                                     # hand lines to it rather than spawning one
 
@@ -279,18 +266,9 @@ class DiffBrowser(object):
         self.filters = []           # stack of {"pat", "neg"} refinements
         self.finput = ""            # the filter being typed in FILTER mode
         self.matches = []           # the displayed set after filters
-        self.root = None
-        self.expanded = set()
         self.jump_active = False    # in the ':' jump-to-number prompt?
         self.jump_buf = ""
-        self.cursor = 0
-        self.cur_id = None
-        self.top = 0
-        self.rows = []
-        self.status = ""
-        self.dirty = True           # rows need rebuilding before the next render
         self._tally = (0, 0, 0)     # cached (adds, dels, files) over self.matches
-        self.painter = FramePainter()
 
     # -- running git diff ----------------------------------------------------
     def reload(self, preserve=False):
@@ -378,7 +356,7 @@ class DiffBrowser(object):
             self.cur_id = None
         self.rebuild()
         if not preserve or self.cur_id is None:
-            self.cursor = self._first_match_index()
+            self.cursor = self._first_branch_index()
         self._sync_id()
 
     def _refresh_filter_view(self):
@@ -433,146 +411,6 @@ class DiffBrowser(object):
         self.reload(preserve=True)
         self.status = "context -U{0}".format(value)
 
-    # -- building the visible rows ------------------------------------------
-    def rebuild(self):
-        # Flatten the tree into visible rows. This is O(all changed lines), so on
-        # a large diff it's expensive -- the run loop only calls it when `dirty`
-        # says the tree or expansion actually changed, not on plain cursor moves.
-        self.rows = build_visible(self.root, self.expanded, None) if self.root else []
-        if self.cur_id is not None:
-            for i, row in enumerate(self.rows):
-                if row["id"] == self.cur_id:
-                    self.cursor = i
-                    break
-            else:
-                self.cursor = self._first_match_index()
-        self.cursor = max(0, min(self.cursor, len(self.rows) - 1)) if self.rows else 0
-        self.cur_id = self.rows[self.cursor]["id"] if self.rows else None
-        self.dirty = False
-
-    def _first_match_index(self):
-        for i, row in enumerate(self.rows):
-            if row["type"] == "branch":
-                return i
-        return 0
-
-    # -- cursor movement -----------------------------------------------------
-    def _sync_id(self):
-        if self.rows:
-            self.cur_id = self.rows[self.cursor]["id"]
-
-    def move(self, delta):
-        if self.rows:
-            self.cursor = max(0, min(self.cursor + delta, len(self.rows) - 1))
-            self._sync_id()
-
-    def move_to(self, index):
-        if self.rows:
-            self.cursor = max(0, min(index, len(self.rows) - 1))
-            self._sync_id()
-
-    def _file_row_indices(self):
-        return [i for i, r in enumerate(self.rows)
-                if r["type"] == "folder" and is_file_node(r["node"])]
-
-    def _owning_file_index(self, idx):
-        """Row index of the file row that owns rows[idx] (itself, if it already
-        is one), or None when the cursor sits on a plain directory folder."""
-        row = self.rows[idx]
-        if row["type"] == "folder" and is_file_node(row["node"]):
-            return idx
-        depth = row["depth"]
-        for i in range(idx - 1, -1, -1):
-            if self.rows[i]["depth"] < depth:
-                parent = self.rows[i]
-                return i if (parent["type"] == "folder" and
-                            is_file_node(parent["node"])) else None
-        return None
-
-    def _goto_file(self, file_idx):
-        """Land the cursor on the first line under the file at file_idx,
-        expanding it first if it's currently folded."""
-        row = self.rows[file_idx]
-        if not row["expanded"]:
-            self.expanded.add(row["node"].path)
-            splice_expand(self.rows, file_idx, self.expanded)   # file_idx unmoved
-        target = file_idx
-        if target + 1 < len(self.rows) and \
-                self.rows[target + 1]["depth"] > self.rows[target]["depth"]:
-            target += 1
-        self.move_to(target)
-
-    def next_file(self):
-        files = self._file_row_indices()
-        if not files:
-            return
-        anchor = self._owning_file_index(self.cursor)
-        if anchor is None:
-            anchor = self.cursor
-        nxt = next((i for i in files if i > anchor), None)
-        if nxt is None:
-            self.status = "already on the last file"
-            return
-        self._goto_file(nxt)
-
-    def prev_file(self):
-        files = self._file_row_indices()
-        if not files:
-            return
-        anchor = self._owning_file_index(self.cursor)
-        if anchor is None:
-            anchor = self.cursor
-        earlier = [i for i in files if i < anchor]
-        if not earlier:
-            self.status = "already on the first file"
-            return
-        self._goto_file(earlier[-1])
-
-    def jump_to_number(self, buf):
-        if not buf:
-            return
-        n = int(buf)
-        target = None
-        for i, row in enumerate(self.rows):
-            if row["number"] is not None:
-                target = i
-                if row["number"] >= n:
-                    break
-        if target is not None:
-            self.cursor = target
-            self._sync_id()
-
-    # -- folder open/close ---------------------------------------------------
-    def expand(self):
-        if not self.rows:
-            return
-        row = self.rows[self.cursor]
-        if row["type"] != "folder":
-            return
-        if row["expanded"]:
-            self.move(1)
-        else:
-            self.expanded.add(row["node"].path)
-            splice_expand(self.rows, self.cursor, self.expanded)
-
-    def collapse(self):
-        if not self.rows:
-            return
-        row = self.rows[self.cursor]
-        if row["type"] == "folder" and row["expanded"]:
-            self.expanded.discard(row["node"].path)
-            splice_collapse(self.rows, self.cursor)
-            return
-        path = row["node"].path
-        parent = path.rsplit("/", 1)[0] if "/" in path else ""
-        if not parent:
-            return
-        for i, r in enumerate(self.rows):
-            if r["id"] == "F:" + parent:
-                self.cursor = i
-                self._sync_id()
-                break
-
     def toggle_case(self):
         self.ignore_case = not self.ignore_case
         if self.mode == "filter":
@@ -626,14 +464,7 @@ class DiffBrowser(object):
             self.painter.reset()    # the editor owned the screen; repaint it all
 
     # -- key handling --------------------------------------------------------
-    def handle(self, key, screen):
-        if key in ("", "DELETE"):
-            return True
-        if key == "REDRAW":
-            self.painter.reset()     # Ctrl-L: repaint from scratch
-            return True
-        if key == "EOF":
-            return False
+    def _dispatch(self, key, screen):
         if key == "TAB":
             self.status = ""
             self.toggle_case()
@@ -791,16 +622,7 @@ class DiffBrowser(object):
                 "< back · \\ whole · 0-9/± context · :N jump · r refresh · q quit")
         return base + ("    " + self.status if self.status else "")
 
-    def render(self):
-        cols, lines_h = term_size()
-        area = max(1, lines_h - 4)
-
-        if self.cursor < self.top:
-            self.top = self.cursor
-        elif self.cursor >= self.top + area:
-            self.top = self.cursor - area + 1
-        self.top = max(0, min(self.top, max(0, len(self.rows) - area)))
-
+    def _header(self):
         mode = "FILTER" if self.mode == "filter" else "BROWSE"
         ic = "  -i" if self.ignore_case else ""
         if self.matches:
@@ -814,46 +636,11 @@ class DiffBrowser(object):
         crumb = self._stack_crumb()
         if crumb:
             header += "    " + crumb
+        return header
 
-        lines = [screen_line(header[:cols], cols, BOLD if self.use_color else ""),
-                 screen_line("─" * cols, cols, "")]
-
-        window = self.rows[self.top:self.top + area]
-        for i, row in enumerate(window):
-            idx = self.top + i
-            text = self._row_text(row)[:cols]
-            if self.use_color and idx == self.cursor:
-                lines.append(screen_line(text, cols, REVERSE, pad=True))
-            else:
-                lines.append(screen_line(text, cols, self._color_for(row)))
-        if not self.rows:
-            hint = "  (no changes to show)" if not self.all_lines else \
-                "  (no lines match)"
-            lines.append(screen_line(hint, cols, ""))
-        drawn = max(len(window), 0 if self.rows else 1)
-        lines.extend([""] * (area - drawn))
-
-        lines.append(screen_line("─" * cols, cols, ""))
-        lines.append(screen_line(self._footer()[:cols], cols, ""))
-        self.painter.paint(lines, (cols, lines_h))
-
-    # -- main loop -----------------------------------------------------------
-    def run(self, screen):
-        while True:
-            if self.dirty:              # only reflatten when the tree/expansion
-                self.rebuild()          # changed -- not on plain cursor moves
-            self.render()
-            # Drain the whole burst of buffered keys before redrawing, so a
-            # held-down key can't queue frames faster than the terminal draws.
-            while True:
-                try:
-                    key = read_key()
-                except KeyboardInterrupt:
-                    return
-                if not self.handle(key, screen):
-                    return
-                if not input_pending():
-                    break
+    def _empty_hint(self):
+        return "  (no changes to show)" if not self.all_lines else \
+            "  (no lines match)"
 
 
 def main():
