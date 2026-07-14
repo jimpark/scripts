@@ -103,8 +103,8 @@ import subprocess
 import sys
 from collections import namedtuple
 
-from branch_tui import (BLUE, BOLD, CLEAR_EOL, CLEAR_EOS, CYAN, HOME, REVERSE,
-                        Node, TerminalSession, build_visible, git, in_git_repo,
+from branch_tui import (BLUE, BOLD, CYAN, REVERSE, FramePainter, Node,
+                        TerminalSession, build_visible, git, in_git_repo,
                         input_pending, read_key, screen_line, splice_collapse,
                         splice_expand, term_size)
 from editor_config import load_config, open_args
@@ -237,6 +237,7 @@ class GrepBrowser(object):
         self.status = ""
         self.dirty = True           # rows need rebuilding before the next render
         self._tally = (0, 0)        # cached (hits, files) over self.matches
+        self.painter = FramePainter()
 
     # -- running git grep ----------------------------------------------------
     def search(self, preserve=False):
@@ -630,10 +631,14 @@ class GrepBrowser(object):
             self.status = "could not open: {0}".format(exc)
         finally:
             screen.resume()
+            self.painter.reset()    # the editor owned the screen; repaint it all
 
     # -- key handling --------------------------------------------------------
     def handle(self, key, screen):
         if key in ("", "DELETE"):
+            return True
+        if key == "REDRAW":
+            self.painter.reset()     # Ctrl-L: repaint from scratch
             return True
         if key == "EOF":
             return False
@@ -861,31 +866,26 @@ class GrepBrowser(object):
         if crumb:
             header += "    " + crumb
 
-        out = [HOME, screen_line(header[:cols], cols, BOLD if self.use_color else ""),
-               screen_line("─" * cols, cols, "")]
+        lines = [screen_line(header[:cols], cols, BOLD if self.use_color else ""),
+                 screen_line("─" * cols, cols, "")]
 
         window = self.rows[self.top:self.top + area]
         for i, row in enumerate(window):
             idx = self.top + i
             text = self._row_text(row)[:cols]
             if self.use_color and idx == self.cursor:
-                out.append(screen_line(text, cols, REVERSE, pad=True))
+                lines.append(screen_line(text, cols, REVERSE, pad=True))
             else:
-                out.append(screen_line(text, cols, self._color_for(row)))
+                lines.append(screen_line(text, cols, self._color_for(row)))
         if not self.rows:
             hint = "  (matches appear here)" if not self.matches else ""
-            out.append(screen_line(hint, cols, ""))
+            lines.append(screen_line(hint, cols, ""))
         drawn = max(len(window), 0 if self.rows else 1)
-        for _ in range(area - drawn):
-            out.append(CLEAR_EOL + "\r\n")
+        lines.extend([""] * (area - drawn))
 
-        out.append(screen_line("─" * cols, cols, ""))
-        out.append(screen_line(self._footer()[:cols], cols, ""))
-        frame = "".join(out)
-        if frame.endswith("\r\n"):
-            frame = frame[:-2]    # no newline on the bottom row → no scroll bounce
-        sys.stderr.write(frame + CLEAR_EOS)
-        sys.stderr.flush()
+        lines.append(screen_line("─" * cols, cols, ""))
+        lines.append(screen_line(self._footer()[:cols], cols, ""))
+        self.painter.paint(lines, (cols, lines_h))
 
     # -- main loop -----------------------------------------------------------
     def run(self, screen):

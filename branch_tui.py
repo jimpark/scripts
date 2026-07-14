@@ -313,6 +313,8 @@ if os.name == "nt":
             return "TAB"
         if ch == "\x03":
             raise KeyboardInterrupt
+        if ch == "\x0c":
+            return "REDRAW"
         if ch == "\x1b":
             return "ESC"
         if ch < " ":
@@ -358,6 +360,8 @@ else:
             raise KeyboardInterrupt
         if o == 0x04:
             return "EOF"
+        if o == 0x0c:
+            return "REDRAW"
         if o < 0x20:
             return ""
         if o < 0x80:
@@ -422,16 +426,53 @@ def term_size():
 
 
 def screen_line(text, cols, color, pad=False):
-    """One rendered line of a frame: `text` (already clipped to `cols`) wrapped
-    in `color`, ending in erase-to-EOL + CRLF. CLEAR_EOL wipes whatever the
+    """One line of a frame, ready for FramePainter: `text` (already clipped to
+    `cols`) wrapped in `color`. The painter's erase-to-EOL wipes whatever the
     previous frame left on the line, so no space padding is needed -- except on
     the reversed cursor row (pad=True), where the highlight bar must span the
     width with real reverse-video spaces."""
     if pad:
         text = text + " " * max(0, cols - len(text))
     if color:
-        text = color + text + RESET
-    return text + CLEAR_EOL + "\r\n"
+        return color + text + RESET
+    return text
+
+
+class FramePainter(object):
+    """Paints whole frames with minimal output: remembers the lines it last
+    painted and rewrites only the ones that changed, each addressed with an
+    absolute cursor-position escape (curses' virtual-screen idea, at line
+    granularity). A cursor move thus costs two short writes instead of a full
+    frame -- what keeps ssh and VM terminals responsive -- while a scroll,
+    a resize, or the first paint naturally falls back to a full repaint.
+
+    The frame must be a list of exactly one string per screen line, none of
+    which moves the cursor itself (colors are fine). reset() forgets the
+    cache; call it whenever the screen may no longer show what was painted
+    (after suspending for an editor, or on Ctrl-L)."""
+
+    def __init__(self):
+        self._lines = None
+        self._size = None
+
+    def reset(self):
+        self._lines = None
+
+    def paint(self, lines, size):
+        if (self._lines is None or self._size != size or
+                len(self._lines) != len(lines)):
+            # Full repaint: home, every line (erasing its tail), then erase
+            # any remnant below. No trailing newline -> no scroll bounce.
+            out = HOME + (CLEAR_EOL + "\r\n").join(lines) + CLEAR_EOS
+        else:
+            out = "".join("\x1b[{0};1H".format(i + 1) + line + CLEAR_EOL
+                          for i, line in enumerate(lines)
+                          if line != self._lines[i])
+        self._lines = lines
+        self._size = size
+        if out:
+            sys.stderr.write(out)
+            sys.stderr.flush()
 
 
 # ─── the reusable modal picker ───────────────────────────────────────────────
@@ -461,6 +502,7 @@ class Picker(object):
         self._cache = {}           # show_remotes -> (branches, locals, remotes)
         self._root_cache = {}      # show_remotes -> the built folder tree
         self.dirty = True          # rows need rebuilding before the next render
+        self.painter = FramePainter()
 
     # -- data ----------------------------------------------------------------
     def _branches(self):
@@ -591,6 +633,9 @@ class Picker(object):
     def handle(self, key):
         if key in ("", "DELETE"):
             return True
+        if key == "REDRAW":
+            self.painter.reset()     # Ctrl-L: repaint from scratch
+            return True
         if key == "EOF":
             self.result = None
             return False
@@ -708,34 +753,28 @@ class Picker(object):
             self.top = self.cursor - area + 1
         self.top = max(0, min(self.top, max(0, len(self.rows) - area)))
 
-        out = [HOME]
         scope = "local + remote" if self.show_remotes else "local"
         mode = "FILTER" if self.mode == "filter" else "NORMAL"
         header = " {0}    [{1}]    ({2}){3}".format(
             self.title, mode, scope, self.header_extra())
-        out.append(screen_line(header[:cols], cols, BOLD if self.use_color else ""))
-        out.append(screen_line("─" * cols, cols, ""))
+        lines = [screen_line(header[:cols], cols, BOLD if self.use_color else ""),
+                 screen_line("─" * cols, cols, "")]
 
         window = self.rows[self.top:self.top + area]
         for i, row in enumerate(window):
             idx = self.top + i
             text = self._row_text(row)[:cols]
             if self.use_color and idx == self.cursor:
-                out.append(screen_line(text, cols, REVERSE, pad=True))
+                lines.append(screen_line(text, cols, REVERSE, pad=True))
             else:
-                out.append(screen_line(text, cols, self._color_for(row)))
+                lines.append(screen_line(text, cols, self._color_for(row)))
         if not self.rows:
-            out.append(screen_line("  (no branches match)", cols, ""))
-        for _ in range(area - max(len(window), 0 if self.rows else 1)):
-            out.append("" + CLEAR_EOL + "\r\n")
+            lines.append(screen_line("  (no branches match)", cols, ""))
+        lines.extend([""] * (area - max(len(window), 0 if self.rows else 1)))
 
-        out.append(screen_line("─" * cols, cols, ""))
-        out.append(screen_line(self.footer()[:cols], cols, ""))
-        frame = "".join(out)
-        if frame.endswith("\r\n"):
-            frame = frame[:-2]    # no newline on the bottom row → no scroll bounce
-        sys.stderr.write(frame + CLEAR_EOS)
-        sys.stderr.flush()
+        lines.append(screen_line("─" * cols, cols, ""))
+        lines.append(screen_line(self.footer()[:cols], cols, ""))
+        self.painter.paint(lines, (cols, lines_h))
 
     def _filter_suffix(self):
         tail = " (literal)" if self.bad_regex else ""

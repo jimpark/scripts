@@ -21,18 +21,22 @@ fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 
 Key facts that make captures easy:
 
-- Every full repaint starts with HOME (`\x1b[H`) and ends with `\x1b[J`
-  (CLEAR_EOS); split on `\x1b[H` to count frames or grab the last screen.
+- Output is line-diffed (branch_tui.FramePainter): only the FIRST paint, a
+  resize, post-editor resume, and Ctrl-L emit a full frame (HOME `\x1b[H` …
+  `\x1b[J`). Everything else is per-line updates addressed with `\x1b[row;1H`
+  + text + `\x1b[K`, and an unchanged frame writes ZERO bytes (e.g. a move
+  that clamps at the top/bottom). To assert on what the user sees, replay the
+  byte stream through a small ANSI screen emulator (cells + reverse flag,
+  handling CUP/EL/ED/SGR/CR/LF) — a past session's `ansi_screen.py` +
+  `drive_diffpaint.py` in its scratchpad did exactly this.
 - The cursor row is the only line containing REVERSE (`\x1b[7m`).
 - The run loops coalesce buffered input: a burst of keys written in one
-  `os.write` yields ONE frame reflecting the final state — expected, not a bug.
+  `os.write` yields ONE repaint reflecting the final state — expected, not
+  a bug. Ctrl-L forces a full repaint.
 - Safe keys: j/k/g/G/n/p, arrows, `/pattern\r` (filter), `q` quits.
   AVOID Enter in git-switch/delete-branch (switches/deletes branches!) and
   Enter on a match row in git-grep/git-diff/git-open (spawns the editor).
 - Exit status 0 on `q`; scripts print notices after leaving the alt screen.
-
-A reusable driver from a past session (frame counting, cursor tracking,
-key bursts): scratchpad `drive_tui.py` — recreate from this recipe if gone.
 
 Non-TUI surfaces: git-prune.py and the others are plain CLIs; run them with
 `--help` / dry paths directly. Unit tests live at `python3 tests/test_splice.py`
