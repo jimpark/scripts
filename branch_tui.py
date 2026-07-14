@@ -291,7 +291,10 @@ def branches_under(branches, folder_path):
 
 # ─── key input (per platform, stdlib only) ───────────────────────────────────
 # read_key() returns one logical token: a single printable character, or one of
-# the names below. "" means "ignore this key".
+# the names below. "" means "ignore this key". input_pending() reports, without
+# blocking, whether another key is already buffered -- the run loops use it to
+# handle a whole burst of keys per redraw, so held-key autorepeat can't queue
+# up stale frames faster than the terminal draws them.
 if os.name == "nt":
     import msvcrt
 
@@ -315,6 +318,9 @@ if os.name == "nt":
         if ch < " ":
             return ""
         return ch
+
+    def input_pending():
+        return msvcrt.kbhit()
 else:
     import select
     import termios
@@ -363,6 +369,10 @@ else:
         except (UnicodeDecodeError, OSError):
             return ""
 
+    def input_pending():
+        r, _, _ = select.select([sys.stdin.fileno()], [], [], 0)
+        return bool(r)
+
 
 class TerminalSession(object):
     """Context manager: put the terminal in raw mode, switch to the alternate
@@ -409,6 +419,19 @@ def term_size():
         import shutil
         ts = shutil.get_terminal_size((80, 24))
         return ts.columns, ts.lines
+
+
+def screen_line(text, cols, color, pad=False):
+    """One rendered line of a frame: `text` (already clipped to `cols`) wrapped
+    in `color`, ending in erase-to-EOL + CRLF. CLEAR_EOL wipes whatever the
+    previous frame left on the line, so no space padding is needed -- except on
+    the reversed cursor row (pad=True), where the highlight bar must span the
+    width with real reverse-video spaces."""
+    if pad:
+        text = text + " " * max(0, cols - len(text))
+    if color:
+        text = color + text + RESET
+    return text + CLEAR_EOL + "\r\n"
 
 
 # ─── the reusable modal picker ───────────────────────────────────────────────
@@ -690,36 +713,29 @@ class Picker(object):
         mode = "FILTER" if self.mode == "filter" else "NORMAL"
         header = " {0}    [{1}]    ({2}){3}".format(
             self.title, mode, scope, self.header_extra())
-        out.append(self._line(header[:cols], cols, BOLD if self.use_color else ""))
-        out.append(self._line("─" * cols, cols, ""))
+        out.append(screen_line(header[:cols], cols, BOLD if self.use_color else ""))
+        out.append(screen_line("─" * cols, cols, ""))
 
         window = self.rows[self.top:self.top + area]
         for i, row in enumerate(window):
             idx = self.top + i
             text = self._row_text(row)[:cols]
             if self.use_color and idx == self.cursor:
-                out.append(self._line(text, cols, REVERSE))
+                out.append(screen_line(text, cols, REVERSE, pad=True))
             else:
-                out.append(self._line(text, cols, self._color_for(row)))
+                out.append(screen_line(text, cols, self._color_for(row)))
         if not self.rows:
-            out.append(self._line("  (no branches match)", cols, ""))
+            out.append(screen_line("  (no branches match)", cols, ""))
         for _ in range(area - max(len(window), 0 if self.rows else 1)):
             out.append("" + CLEAR_EOL + "\r\n")
 
-        out.append(self._line("─" * cols, cols, ""))
-        out.append(self._line(self.footer()[:cols], cols, ""))
+        out.append(screen_line("─" * cols, cols, ""))
+        out.append(screen_line(self.footer()[:cols], cols, ""))
         frame = "".join(out)
         if frame.endswith("\r\n"):
             frame = frame[:-2]    # no newline on the bottom row → no scroll bounce
         sys.stderr.write(frame + CLEAR_EOS)
         sys.stderr.flush()
-
-    @staticmethod
-    def _line(text, cols, color):
-        text = text + " " * max(0, cols - len(text))
-        if color:
-            text = color + text + RESET
-        return text + CLEAR_EOL + "\r\n"
 
     def _filter_suffix(self):
         tail = " (literal)" if self.bad_regex else ""
@@ -733,13 +749,18 @@ class Picker(object):
             if self.dirty:              # only rebuild when the query/scope/open
                 self.rebuild()          # folders changed -- not on cursor moves
             self.render()
-            try:
-                key = read_key()
-            except KeyboardInterrupt:
-                self.result = None
-                return None
-            if not self.handle(key):
-                return self.result
+            # Drain the whole burst of buffered keys before redrawing, so a
+            # held-down key can't queue frames faster than the terminal draws.
+            while True:
+                try:
+                    key = read_key()
+                except KeyboardInterrupt:
+                    self.result = None
+                    return None
+                if not self.handle(key):
+                    return self.result
+                if not input_pending():
+                    break
 
     # -- hooks for subclasses ------------------------------------------------
     def on_enter(self):

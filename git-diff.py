@@ -110,9 +110,9 @@ import sys
 from collections import namedtuple
 
 from branch_tui import (BLUE, BOLD, CLEAR_EOL, CLEAR_EOS, CYAN, GREEN, HOME,
-                        RESET, REVERSE, Node, TerminalSession, build_visible,
-                        git, in_git_repo, read_key, splice_collapse,
-                        splice_expand, term_size)
+                        REVERSE, Node, TerminalSession, build_visible, git,
+                        in_git_repo, input_pending, read_key, screen_line,
+                        splice_collapse, splice_expand, term_size)
 from editor_config import load_config, open_args
 from editor_ide import detect_ide
 
@@ -733,13 +733,6 @@ class DiffBrowser(object):
         return True
 
     # -- rendering -----------------------------------------------------------
-    @staticmethod
-    def _line(text, cols, color):
-        text = text + " " * max(0, cols - len(text))
-        if color:
-            text = color + text + RESET
-        return text + CLEAR_EOL + "\r\n"
-
     def _row_text(self, row):
         indent = "  " * row["depth"]
         node = row["node"]
@@ -817,27 +810,27 @@ class DiffBrowser(object):
         if crumb:
             header += "    " + crumb
 
-        out = [HOME, self._line(header[:cols], cols, BOLD if self.use_color else ""),
-               self._line("─" * cols, cols, "")]
+        out = [HOME, screen_line(header[:cols], cols, BOLD if self.use_color else ""),
+               screen_line("─" * cols, cols, "")]
 
         window = self.rows[self.top:self.top + area]
         for i, row in enumerate(window):
             idx = self.top + i
             text = self._row_text(row)[:cols]
             if self.use_color and idx == self.cursor:
-                out.append(self._line(text, cols, REVERSE))
+                out.append(screen_line(text, cols, REVERSE, pad=True))
             else:
-                out.append(self._line(text, cols, self._color_for(row)))
+                out.append(screen_line(text, cols, self._color_for(row)))
         if not self.rows:
             hint = "  (no changes to show)" if not self.all_lines else \
                 "  (no lines match)"
-            out.append(self._line(hint, cols, ""))
+            out.append(screen_line(hint, cols, ""))
         drawn = max(len(window), 0 if self.rows else 1)
         for _ in range(area - drawn):
             out.append(CLEAR_EOL + "\r\n")
 
-        out.append(self._line("─" * cols, cols, ""))
-        out.append(self._line(self._footer()[:cols], cols, ""))
+        out.append(screen_line("─" * cols, cols, ""))
+        out.append(screen_line(self._footer()[:cols], cols, ""))
         frame = "".join(out)
         if frame.endswith("\r\n"):
             frame = frame[:-2]    # no newline on the bottom row → no scroll bounce
@@ -850,12 +843,17 @@ class DiffBrowser(object):
             if self.dirty:              # only reflatten when the tree/expansion
                 self.rebuild()          # changed -- not on plain cursor moves
             self.render()
-            try:
-                key = read_key()
-            except KeyboardInterrupt:
-                return
-            if not self.handle(key, screen):
-                return
+            # Drain the whole burst of buffered keys before redrawing, so a
+            # held-down key can't queue frames faster than the terminal draws.
+            while True:
+                try:
+                    key = read_key()
+                except KeyboardInterrupt:
+                    return
+                if not self.handle(key, screen):
+                    return
+                if not input_pending():
+                    break
 
 
 def main():
