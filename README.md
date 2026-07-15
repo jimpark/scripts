@@ -241,18 +241,21 @@ what branch each one is on.
 
 It scans the **immediate subdirectories** (no recursion) for anything with a
 `.git` entry — normal clones, worktree checkouts, and submodule checkouts all
-count — runs the command in each, and prints one section per repo (in sorted
-name order, stdout and stderr merged) followed by a summary of successes and
-failures. **Symlinked directories are followed**, deduped by resolved path so
+count — runs the command in each, and prints one section per repo (stdout and
+stderr merged) followed by a summary of successes and failures. Successful
+repos are reported first and **failed repos last** (each group in sorted name
+order), so the failures sit right above the summary instead of scrolling
+away. **Symlinked directories are followed**, deduped by resolved path so
 a repo reachable under two names only runs once (the real directory's name
 wins over a symlink's).
 
 Repos are processed **in parallel** by default, which is what makes network
 commands like `fetch`/`pull` across a dozen repos fast; the report is
-deterministic regardless. While they run, a **live progress counter**
-(`[12/80] <last repo finished>`) ticks on stderr so a long pull/rebase pass
-never looks hung, and any failure is echoed the moment it happens. The
-counter only appears when stderr is a terminal, so redirected runs stay
+deterministic regardless. While they run, a **live progress counter** naming
+the repos still in flight (`[78/80] running: linux, llvm-project`) ticks on
+stderr, so a long pull/rebase pass never looks hung — and if one repo is
+slow, it's the one on screen. Failures are echoed the moment they happen.
+The counter only appears when stderr is a terminal, so redirected runs stay
 clean.
 
 ### Usage
@@ -285,6 +288,7 @@ git-batch log -1 --oneline      # last commit in each repo
 | `-C <dir>` | Scan this directory instead of the current one. |
 | `-j`, `--jobs <N>` | Repos to process in parallel (default: scales with CPU count; `1` disables parallelism). |
 | `-q`, `--quiet` | Only print sections for repos where the command failed; successes fold into the summary. |
+| `--timeout <seconds>` | Kill a repo's command (and everything it spawned) after this long; the repo reports as *timed out*. Default: no limit. |
 
 Run `python git-batch.py --help` for the full reference.
 
@@ -306,6 +310,13 @@ Run `python git-batch.py --help` for the full reference.
   keys, and credential helpers still work — only *prompting you* is disabled,
   and the failing repo shows up immediately in the progress line and the
   report.
+- **Stalled network connections can't hang the run.** The injected ssh command
+  also enables keepalives (`ConnectTimeout=15`, `ServerAliveInterval=15
+  ServerAliveCountMax=4`), so a connection that goes silent — seen in the wild
+  against `ssh.dev.azure.com` — aborts after ~60 seconds instead of waiting
+  forever (ssh's default). For hangs from any other source (hooks, HTTPS
+  stalls, credential helpers), `--timeout <seconds>` is a hard per-repo cap
+  that kills the repo's whole process tree and reports it as timed out.
 - The exit status is aggregate: `0` only if the command succeeded in **every**
   repo, `1` if any failed (the summary lists which).
 

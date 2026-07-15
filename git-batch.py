@@ -18,13 +18,15 @@ command works:
 
 Repos are processed in parallel (handy for network commands like fetch and
 pull); pass -j 1 for strictly sequential runs. While repos run, a live
-progress counter ([12/80] <last repo finished>) is shown on stderr — only
-when stderr is a terminal, so piped/redirected runs stay clean — and any
-failure is echoed immediately rather than held until the end. Regardless of
+progress counter ([12/80] running: repo1, repo2, ...) naming the repos still
+in flight is shown on stderr — only when stderr is a terminal, so
+piped/redirected runs stay clean — and any failure is echoed immediately
+rather than held until the end. Regardless of
 how the work is scheduled, the report is deterministic: one section per repo
-in sorted name order, each with the command's combined stdout/stderr,
-followed by a summary line counting successes and failures (failed repos are
-listed by name).
+with the command's combined stdout/stderr — successes first, failures last,
+each group in sorted name order, so failures sit right above the summary
+instead of scrolling away — followed by a summary line counting successes
+and failures (failed repos are listed by name).
 
 Use --quiet to keep the report short: only repos whose command failed get a
 section; everything else is folded into the summary.
@@ -46,8 +48,11 @@ Exit status:
 import argparse
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 __version__ = "1.0.0"
@@ -86,11 +91,32 @@ def find_repos(root: str):
     return sorted(repos, key=str.lower)
 
 
-def run_in_repo(root: str, repo: str, git_args):
+def kill_tree(proc):
+    """Terminate `proc` and everything it spawned, gently then firmly."""
+    def signal_group(sig):
+        if os.name == "posix":
+            # start_new_session=True made proc its own process group, so this
+            # reaches git's children (ssh, remote helpers) too.
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                pass
+        else:
+            proc.kill()
+    signal_group(signal.SIGTERM)  # let git clean up its lock files
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        signal_group(signal.SIGKILL)
+        proc.wait()
+
+
+def run_in_repo(root: str, repo: str, git_args, timeout=None):
     """Run `git <git_args>` inside `repo`. Returns (repo, returncode, output).
 
     stdout and stderr are merged so the report reads like the command would
-    have looked in a terminal, just prefixed per repo.
+    have looked in a terminal, just prefixed per repo. A `timeout` in seconds
+    kills the repo's whole process tree when exceeded; returncode is None.
 
     A batch run can never answer a prompt, and with output captured a prompt
     is an *invisible hang*: git asks on /dev/tty, which the user never sees.
@@ -101,21 +127,45 @@ def run_in_repo(root: str, repo: str, git_args):
     -m), and ssh runs in BatchMode (skipped if the user routes ssh through
     their own GIT_SSH_COMMAND/GIT_SSH). Agent-loaded keys, passwordless keys,
     and credential helpers still work — only *asking the user* is disabled.
+
+    The injected ssh command also enables keepalives: a stalled-but-still-
+    ESTABLISHED connection (seen in the wild against ssh.dev.azure.com) would
+    otherwise hang a fetch forever, since ssh's default is to wait
+    indefinitely. ConnectTimeout bounds the TCP/handshake phase and
+    ServerAlive* abort a session after ~60s of silence.
     """
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_EDITOR"] = "false"
     if "GIT_SSH_COMMAND" not in env and "GIT_SSH" not in env:
-        env["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes"
-    result = subprocess.run(
-        ["git", "-C", os.path.join(root, repo), *git_args],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        env=env,
-    )
-    return repo, result.returncode, result.stdout
+        env["GIT_SSH_COMMAND"] = ("ssh -oBatchMode=yes -oConnectTimeout=15 "
+                                  "-oServerAliveInterval=15 -oServerAliveCountMax=4")
+    # Capture into a temp file, not a pipe. After fetch/pull git may spawn
+    # *background* maintenance (gc --auto), which inherits our capture fd; a
+    # pipe would keep this call blocked until that detached child also exits
+    # (the "hangs after the last repo" bug), while a plain file lets us return
+    # as soon as git itself does.
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as buf:
+        proc = subprocess.Popen(
+            ["git", "-C", os.path.join(root, repo), *git_args],
+            stdout=buf,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            start_new_session=(os.name == "posix"),
+        )
+        try:
+            returncode = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            returncode = None
+        buf.seek(0)
+        output = buf.read()
+    if returncode is None and not output.endswith("\n") and output:
+        output += "\n"
+    if returncode is None:
+        output += f"git-batch: no result after {timeout}s; killed.\n"
+    return repo, returncode, output
 
 
 def err(*args):
@@ -151,6 +201,10 @@ def main(argv=None) -> int:
                              "CPU count; 1 disables parallelism)")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="only print sections for repos where the command failed")
+    parser.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
+                        help="kill a repo's command (and everything it spawned) "
+                             "after this many seconds and report it as timed out "
+                             "(default: no limit)")
     parser.add_argument("--version", action="version",
                         version=f"%(prog)s {__version__}")
     args = parser.parse_args(argv)
@@ -177,53 +231,71 @@ def main(argv=None) -> int:
     # Live progress on stderr while repos run, so long commands (pulling 80
     # repos...) don't look hung. A single self-overwriting counter line — no
     # ANSI, just \r and space-padding — shown only when stderr is a terminal;
-    # failures are echoed as permanent lines the moment they happen. The
-    # collated report below is untouched by any of this.
+    # failures are echoed as permanent lines the moment they happen. The line
+    # names the repos *still running*, not the last one finished, so if one
+    # repo is slow (or stuck) it's the one on screen. The collated report
+    # below is untouched by any of this.
     total = len(repos)
     show_progress = sys.stderr.isatty()
+    progress_lock = threading.Lock()  # guards `running`, `done`, and stderr
+    running = set()
+    done = 0
+
+    def render_progress():
+        """Redraw the counter line. Caller must hold progress_lock."""
+        if not show_progress:
+            return
+        cols = shutil.get_terminal_size().columns
+        line = f"[{done}/{total}]"
+        if running:
+            line += " running: " + ", ".join(sorted(running, key=str.lower))
+        sys.stderr.write("\r" + line[:cols - 1].ljust(cols - 1))
+        sys.stderr.flush()
 
     def clear_progress():
+        """Blank the counter line. Caller must hold progress_lock."""
         if show_progress:
             cols = shutil.get_terminal_size().columns
             sys.stderr.write("\r" + " " * (cols - 1) + "\r")
             sys.stderr.flush()
 
-    def progress(done, repo, returncode):
-        if not show_progress:
-            return
-        cols = shutil.get_terminal_size().columns
-        if returncode != 0:
-            clear_progress()
-            print(f"{repo}: failed (exit {returncode})", file=sys.stderr)
-        line = f"[{done}/{total}] {repo}"
-        sys.stderr.write("\r" + line[:cols - 1].ljust(cols - 1))
-        sys.stderr.flush()
+    def task(repo):
+        with progress_lock:
+            running.add(repo)
+            render_progress()
+        return run_in_repo(root, repo, git_args, timeout=args.timeout)
 
+    def fail_label(returncode):
+        return "timed out" if returncode is None else f"failed (exit {returncode})"
+
+    # A single-worker pool keeps -j 1 strictly sequential (in sorted order)
+    # through the same code path as the parallel case.
     results = {}
-    if jobs == 1:
-        for done, repo in enumerate(repos, 1):
-            _, returncode, output = run_in_repo(root, repo, git_args)
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = [pool.submit(task, r) for r in repos]
+        for future in as_completed(futures):
+            repo, returncode, output = future.result()
             results[repo] = (returncode, output)
-            progress(done, repo, returncode)
-    else:
-        with ThreadPoolExecutor(max_workers=jobs) as pool:
-            futures = [pool.submit(run_in_repo, root, r, git_args) for r in repos]
-            for done, future in enumerate(as_completed(futures), 1):
-                repo, returncode, output = future.result()
-                results[repo] = (returncode, output)
-                progress(done, repo, returncode)
-    clear_progress()
+            with progress_lock:
+                running.discard(repo)
+                done += 1
+                if returncode != 0 and show_progress:
+                    clear_progress()
+                    print(f"{repo}: {fail_label(returncode)}", file=sys.stderr)
+                render_progress()
+    with progress_lock:
+        clear_progress()
 
-    # Report in sorted repo order regardless of completion order.
-    failed = []
-    for repo in repos:
+    # Report successes first and failures last (each group in sorted repo
+    # order, regardless of completion order), so the failures sit right above
+    # the summary instead of scrolling away in a long report.
+    failed = [repo for repo in repos if results[repo][0] != 0]
+    for repo in [repo for repo in repos if results[repo][0] == 0] + failed:
         returncode, output = results[repo]
         ok = returncode == 0
-        if not ok:
-            failed.append(repo)
         if args.quiet and ok:
             continue
-        status = "ok" if ok else f"failed (exit {returncode})"
+        status = "ok" if ok else fail_label(returncode)
         print(f"=== {repo}  [{status}]")
         body = output.rstrip("\n")
         print(body if body else "(no output)")
