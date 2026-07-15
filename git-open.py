@@ -3,14 +3,27 @@
 # requires-python = ">=3.11"
 # ///
 """An interactive, full-screen file *finder* for Git -- type a regular
-expression, watch the matching tracked files arrange themselves into a
+expression or a glob, watch the matching tracked files arrange themselves into a
 collapsible folder tree, then hit Enter to open the one you want in your editor.
 Open as many as you like; the picker stays put until you quit.
+
+Queries are regular expressions, except that a query written in glob syntax is
+read as a glob, so `*.props` finds what you'd expect instead of nothing. A query
+counts as a glob when it uses glob syntax (`*`, `?`, `[...]`) and steers clear
+of regex-only syntax (`\\ ( ) | ^ $ + { }`) -- so `*.props`, `build/*.props`,
+and `test_*.py` are globs, while `.*\\.props$` stays a regex. The footer tells
+you which way the query was read. Globs match to the end of the path, starting
+at a folder boundary, and their `*` spans `/`:
+
+    *.props             every .props file, in any folder
+    build/*.props       .props files under any build/ folder, at any depth
+    test_*.py           files named test_*.py, in any folder
+    \\.props$            the same as *.props, the long way round
 
 The picker is *modal*, in the spirit of vim:
 
   PATTERN mode (where you land with no argument) -- the "insert" mode
-    type                     a regular expression; the file list filters live
+    type                     a regex or glob; the file list filters live
     Up / Down                move the highlight through the matches
     Enter  Tab  or  Esc      switch to BROWSE mode to navigate with j/k
                              (an empty prompt just switches; nothing quits here)
@@ -66,6 +79,7 @@ Exit status:
 """
 
 import argparse
+import fnmatch
 import os
 import re
 import subprocess
@@ -77,7 +91,7 @@ from branch_tui import (BLUE, TerminalSession, TreeBrowser, build_tree,
 from editor_config import load_config
 from editor_ide import detect_ide
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # A tracked file, shaped just enough for branch_tui's tree builders, which only
 # ever look at `.name` -- here the repo-root-relative path, split on "/".
@@ -89,6 +103,35 @@ def list_files(toplevel):
     """Every tracked file in the repo, as File items, regardless of cwd."""
     out = git(["-C", toplevel, "ls-files"])
     return [File(line) for line in out.stdout.splitlines() if line]
+
+
+# ─── reading the query as a glob ─────────────────────────────────────────────
+# The two languages overlap, so telling them apart is a judgement call, made
+# once here: a glob is a query that *uses* glob syntax and *avoids* regex-only
+# syntax. `*.props` and `build/*.props` are globs; `.*\.props$` is a regex that
+# merely contains a `*`. Deciding on the query alone -- rather than on whether
+# it happens to compile as a regex -- is what catches `build/*.props`, which is
+# a perfectly valid regex ("build", any number of "/", any char, "props") that
+# no one has ever meant.
+_GLOB_SYNTAX = re.compile(r"[*?\[]")
+_REGEX_SYNTAX = re.compile(r"[\\()|^$+{}]")
+
+
+def looks_like_glob(query):
+    """True when the query reads as a shell glob rather than a regex."""
+    return bool(_GLOB_SYNTAX.search(query)) and not _REGEX_SYNTAX.search(query)
+
+
+def compile_glob(query):
+    """A glob, compiled to match a repo-root-relative path the way the shell
+    would read it. `fnmatch.translate` anchors the tail (the glob has to reach
+    the end of the path), and the `(?:^|/)` prefix anchors the head to a folder
+    boundary, so the glob starts at a path segment instead of in the middle of
+    a name: `test_*.py` finds `tests/test_splice.py`, not `src/mytest_x.py`.
+
+    A `*` spans `/` here, as it does in `git ls-files` -- so `*.props` reaches
+    into every folder, and `build/*.props` matches `build/gen/x.props` too."""
+    return re.compile(r"(?:^|/)" + fnmatch.translate(query), re.IGNORECASE)
 
 
 # ─── terminal session that can step aside for the editor ─────────────────────
@@ -120,19 +163,23 @@ class FileFinder(TreeBrowser):
         self.query = ""
         self.filt = None            # compiled query, or None
         self.bad_regex = False      # query was invalid; matched literally
+        self.is_glob = False        # query read as a glob, not a regex
         self.mode = "pattern"       # "pattern" | "browse"
         self.pending = ""           # digits typed for number-jump
         self._count = 0             # cached number of matching file rows
 
     # -- building the visible rows ------------------------------------------
     def _compile_filter(self):
+        self.filt, self.bad_regex, self.is_glob = None, False, False
         if not self.query:
-            self.filt, self.bad_regex = None, False
+            return
+        if looks_like_glob(self.query):
+            self.filt, self.is_glob = compile_glob(self.query), True
             return
         try:
             self.filt = re.compile(self.query, re.IGNORECASE)
-            self.bad_regex = False
         except re.error:
+            # Not a regex and not glob-shaped either -- match what was typed.
             self.filt = re.compile(re.escape(self.query), re.IGNORECASE)
             self.bad_regex = True
 
@@ -333,10 +380,12 @@ class FileFinder(TreeBrowser):
     def _footer(self):
         if self.mode == "pattern":
             if self.query:
-                tail = "  (literal)" if self.bad_regex else ""
+                tail = "  (glob)" if self.is_glob else \
+                       "  (literal)" if self.bad_regex else ""
                 return (" /{0}{1}    ↑↓ move · Enter/Tab/Esc navigate · ^C quit"
                         .format(self.query, tail))
-            return " Type a regex to find files    Enter/Tab/Esc navigate · ^C quit"
+            return (" Type a regex or glob to find files    "
+                    "Enter/Tab/Esc navigate · ^C quit")
         base = (" j/k ↑↓ move · n/p next/prev file · g/G ends · Enter open · "
                 "Tab edit · / new · q quit")
         return base + ("    " + self.status if self.status else "")
@@ -358,10 +407,12 @@ class FileFinder(TreeBrowser):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Interactively find a tracked file by regex and open it.")
+        description="Interactively find a tracked file by regex or glob and "
+                    "open it.")
     parser.add_argument("pattern", nargs="?",
-                        help="regex to match against file paths; omit to start "
-                             "with an empty prompt")
+                        help="regex to match against file paths, or a glob "
+                             "such as '*.props'; omit to start with an empty "
+                             "prompt")
     parser.add_argument("--version", action="version",
                         version="git-open " + __version__)
     args = parser.parse_args()

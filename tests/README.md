@@ -9,6 +9,7 @@ anywhere with plain `python`:
 
 ```sh
 python tests/test_splice.py
+python tests/test_glob.py
 ```
 
 They use only the standard library (no pytest required) and print an `OK` line
@@ -22,3 +23,8 @@ on success, or raise `AssertionError` on failure.
   random expand/collapse sequences and asserts the incrementally maintained rows
   stay byte-identical (type/depth/node/expanded/number/id/branch) to a full
   `build_visible`, with gap-free branch numbering.
+- **test_glob.py** — Covers how `git-open` reads its query: as a glob when it's
+  glob-shaped (`*.props`, `build/*.props`), as a regex otherwise (`.*\.props$`),
+  and literally when it's neither and won't compile. Checks the paths each
+  selects — including a glob's anchoring at both ends — and that every
+  half-typed query still compiles.

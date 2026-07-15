@@ -24,7 +24,7 @@ for each are below.
 | [`git-batch.py`](#git-batchpy) | Run one git command across every git repo in the current directory and collate the results. |
 | [`git-diff.py`](#git-diffpy) | Interactively browse `git diff` in a folder tree, search the changes, and open a changed line at its spot. |
 | [`git-grep.py`](#git-greppy) | Interactively `git grep`, browse the hits in a folder tree, and open one at its line in your editor. |
-| [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex in a folder tree and open it in your editor. |
+| [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex or glob in a folder tree and open it in your editor. |
 | [`git-prune.py`](#git-prunepy) | Delete local Git branches that no longer exist on a remote. |
 | [`git-switch.py`](#git-switchpy) | Interactive, vim-style Git branch switcher with a collapsible folder tree and remote branches. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
@@ -1421,16 +1421,16 @@ repo, and the `clang-queries/` directory beside the script.
 ## `git-open.py`
 
 A full-screen, **interactive file finder** for a Git repo: type a regular
-expression, watch the matching tracked files arrange themselves into a
-collapsible **folder tree**, and hit `Enter` to open the one you want in your
-editor. Open as many as you like — the picker stays put until you quit. The UI
-is **modal**, like vim.
+expression or a **glob**, watch the matching tracked files arrange themselves
+into a collapsible **folder tree**, and hit `Enter` to open the one you want in
+your editor. Open as many as you like — the picker stays put until you quit. The
+UI is **modal**, like vim.
 
 **PATTERN mode** (where you land with no argument — the "insert" mode):
 
 | Key | Action |
 | --- | ------ |
-| *type* | a **regular expression**; the file list filters live (case-insensitive) |
+| *type* | a **regex** or **glob**; the file list filters live (case-insensitive) |
 | `↑` / `↓` | move the highlight through the matches |
 | `Enter` | open the highlighted file |
 | `Esc` or `Tab` | switch to BROWSE mode to navigate with `j`/`k` (an empty prompt just switches — nothing quits here) |
@@ -1448,6 +1448,27 @@ is **modal**, like vim.
 | `Enter` | open the file under the cursor (on a folder, fold it) |
 | `/` or `Tab` | return to PATTERN mode to search for something else |
 | `q` | quit (`Esc` only navigates — it never quits) |
+
+### Regexes and globs
+
+Queries are regular expressions, except that a query *written as a glob* is read
+as one — so `*.props` finds what you'd expect rather than nothing. A query
+counts as a glob when it uses glob syntax (`*`, `?`, `[...]`) and steers clear of
+regex-only syntax (`\ ( ) | ^ $ + { }`); the footer shows `(glob)` when that's
+how your query was taken. A glob has to match to the **end** of the path and
+start at a **folder boundary**, and its `*` spans `/`, as in `git ls-files`:
+
+| Query | Read as | Matches |
+| ----- | ------- | ------- |
+| `*.props` | glob | every `.props` file, in any folder |
+| `build/*.props` | glob | `.props` files under any `build/` folder, at any depth |
+| `test_*.py` | glob | files named `test_*.py` in any folder — but not `mytest_x.py` |
+| `\.props$` | regex | the same as `*.props`, the long way round |
+| `.*\.props$` | regex | a `*`, but the `\` and `$` keep it a regex |
+| `props` | regex | any path with "props" anywhere in it |
+
+A query that is neither valid regex nor glob-shaped (`main(c`) is matched
+**literally**, and the footer says `(literal)`.
 
 Tracked files come from `git ls-files` run at the **repository root**, so the
 whole repo is searchable no matter which subdirectory you launch from, and the
@@ -1496,11 +1517,14 @@ settings above are used.
 Run it from inside the repository:
 
 ```sh
-# start at an empty prompt, then type a regex
+# start at an empty prompt, then type a regex or glob
 git-open
 
 # open straight onto the matches for a pattern
 git-open '\.py$'
+
+# ...or a glob (quote it, or the shell expands it first)
+git-open '*.props'
 ```
 
 or invoke the script directly:
