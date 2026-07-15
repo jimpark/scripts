@@ -21,6 +21,7 @@ for each are below.
 | [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
 | [`delete-branch.py`](#delete-branchpy) | Interactively check off Git branches (local and remote) — even whole folders — and delete them. |
 | [`docx-runs.py`](#docx-runspy) | Resolve and report the language of every text run in a `.docx`, with per-character script classification. |
+| [`git-batch.py`](#git-batchpy) | Run one git command across every git repo in the current directory and collate the results. |
 | [`git-diff.py`](#git-diffpy) | Interactively browse `git diff` in a folder tree, search the changes, and open a changed line at its spot. |
 | [`git-grep.py`](#git-greppy) | Interactively `git grep`, browse the hits in a folder tree, and open one at its line in your editor. |
 | [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex in a folder tree and open it in your editor. |
@@ -228,6 +229,80 @@ cat feed.xml | python html-info.py
 - HTML is parsed leniently enough for common real-world files, while XML/XHTML
   declarations and namespaces are still surfaced when present.
 - **Requirements:** Python 3.6+ (standard library only; no dependencies).
+
+---
+
+## `git-batch.py`
+
+Runs **one git command across every git repo** in the current directory and
+collates the results — the tool for a `~/projects`-style folder full of clones
+when you want to `fetch` them all, see which have uncommitted work, or check
+what branch each one is on.
+
+It scans the **immediate subdirectories** (no recursion) for anything with a
+`.git` entry — normal clones, worktree checkouts, and submodule checkouts all
+count — runs the command in each, and prints one section per repo (in sorted
+name order, stdout and stderr merged) followed by a summary of successes and
+failures.
+
+Repos are processed **in parallel** by default, which is what makes network
+commands like `fetch`/`pull` across a dozen repos fast; the report is
+deterministic regardless.
+
+### Usage
+
+Run it from the directory that *contains* your repos:
+
+```sh
+git-batch <git command and args…>
+```
+
+or invoke the script directly:
+
+```sh
+python git-batch.py <git command and args…>
+```
+
+Everything after the options is passed to git **verbatim**, so any git command
+works:
+
+```sh
+git-batch status -sb            # what's dirty, and what branch is each on?
+git-batch fetch --prune         # update all remotes, in parallel
+git-batch -j 1 pull --ff-only   # pull each repo, one at a time
+git-batch -q fetch              # only show repos where the fetch failed
+git-batch log -1 --oneline      # last commit in each repo
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `-C <dir>` | Scan this directory instead of the current one. |
+| `-j`, `--jobs <N>` | Repos to process in parallel (default: scales with CPU count; `1` disables parallelism). |
+| `-q`, `--quiet` | Only print sections for repos where the command failed; successes fold into the summary. |
+
+Run `python git-batch.py --help` for the full reference.
+
+### Notes & caveats
+
+- **There is no confirmation and no safety net.** The command is passed through
+  as-is, so `git-batch reset --hard` really will reset every repo. It's a
+  power tool; point it carefully.
+- If the git args themselves start with a dash before any subcommand, put `--`
+  first so the script's own option parser doesn't claim them
+  (e.g. `git-batch -- -c core.pager=cat log -1`).
+- Interactive commands aren't supported: each repo's git runs with stdin
+  closed and its output captured, so anything that prompts (a passphrase, an
+  editor) will fail rather than hang. Use non-interactive variants
+  (`--ff-only`, `--no-edit`, credential helpers).
+- The exit status is aggregate: `0` only if the command succeeded in **every**
+  repo, `1` if any failed (the summary lists which).
+
+Exit status: `0` the command succeeded in every repo · `1` no repos found, or
+the command failed in at least one repo · `2` usage error (bad or missing
+arguments).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies) and Git
+on `PATH`.
 
 ---
 
