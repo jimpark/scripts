@@ -4,7 +4,9 @@
 Scans the immediate subdirectories of the current directory (no recursion)
 for git repositories — anything with a `.git` entry, so normal clones,
 worktree checkouts, and submodule checkouts all count — then runs the given
-git command in each one and collates the results.
+git command in each one and collates the results. Symlinked directories are
+followed, deduped by resolved path so a repo reachable under two names only
+runs once (the real directory's name is preferred over a symlink's).
 
 Everything after the script name is passed to git verbatim, so any git
 command works:
@@ -15,10 +17,14 @@ command works:
     git-batch.py log -1 --oneline
 
 Repos are processed in parallel (handy for network commands like fetch and
-pull); pass -j 1 for strictly sequential runs. Regardless of how the work is
-scheduled, the report is deterministic: one section per repo in sorted name
-order, each with the command's combined stdout/stderr, followed by a summary
-line counting successes and failures (failed repos are listed by name).
+pull); pass -j 1 for strictly sequential runs. While repos run, a live
+progress counter ([12/80] <last repo finished>) is shown on stderr — only
+when stderr is a terminal, so piped/redirected runs stay clean — and any
+failure is echoed immediately rather than held until the end. Regardless of
+how the work is scheduled, the report is deterministic: one section per repo
+in sorted name order, each with the command's combined stdout/stderr,
+followed by a summary line counting successes and failures (failed repos are
+listed by name).
 
 Use --quiet to keep the report short: only repos whose command failed get a
 section; everything else is folded into the summary.
@@ -39,9 +45,10 @@ Exit status:
 """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 __version__ = "1.0.0"
 
@@ -50,18 +57,33 @@ def find_repos(root: str):
     """Return the sorted names of immediate subdirectories that are git repos.
 
     A directory counts as a repo if it contains a `.git` entry — a directory
-    for normal clones, a file for worktrees and submodules.
+    for normal clones, a file for worktrees and submodules. Symlinks to
+    directories are followed, but repos are deduped by resolved path so the
+    same repo never runs twice; when a real directory and a symlink point at
+    the same repo, the real directory's name wins.
     """
-    repos = []
     try:
         entries = sorted(os.scandir(root), key=lambda e: e.name.lower())
     except OSError as exc:
         raise SystemExit(f"Error: cannot list '{root}': {exc}")
-    for entry in entries:
-        if entry.is_dir(follow_symlinks=False) and \
-                os.path.exists(os.path.join(entry.path, ".git")):
-            repos.append(entry.name)
-    return repos
+
+    def is_repo(entry):
+        # follow_symlinks=True also rejects broken symlinks (is_dir is False).
+        return entry.is_dir(follow_symlinks=True) and \
+            os.path.exists(os.path.join(entry.path, ".git"))
+
+    # Two passes so a real directory claims its resolved path before any
+    # symlink alias of it is considered.
+    repos, seen = [], set()
+    for pass_symlinks in (False, True):
+        for entry in entries:
+            if entry.is_symlink() != pass_symlinks or not is_repo(entry):
+                continue
+            real = os.path.realpath(entry.path)
+            if real not in seen:
+                seen.add(real)
+                repos.append(entry.name)
+    return sorted(repos, key=str.lower)
 
 
 def run_in_repo(root: str, repo: str, git_args):
@@ -69,13 +91,29 @@ def run_in_repo(root: str, repo: str, git_args):
 
     stdout and stderr are merged so the report reads like the command would
     have looked in a terminal, just prefixed per repo.
+
+    A batch run can never answer a prompt, and with output captured a prompt
+    is an *invisible hang*: git asks on /dev/tty, which the user never sees.
+    stdin is closed, but credential prompts, editors, and ssh passphrase
+    prompts all bypass stdin and open /dev/tty directly — so each is told to
+    fail fast instead: GIT_TERMINAL_PROMPT=0 turns credential prompts into
+    errors, GIT_EDITOR=false makes any editor launch fail (use --no-edit or
+    -m), and ssh runs in BatchMode (skipped if the user routes ssh through
+    their own GIT_SSH_COMMAND/GIT_SSH). Agent-loaded keys, passwordless keys,
+    and credential helpers still work — only *asking the user* is disabled.
     """
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_EDITOR"] = "false"
+    if "GIT_SSH_COMMAND" not in env and "GIT_SSH" not in env:
+        env["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes"
     result = subprocess.run(
         ["git", "-C", os.path.join(root, repo), *git_args],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
+        env=env,
     )
     return repo, result.returncode, result.stdout
 
@@ -135,15 +173,51 @@ def main(argv=None) -> int:
 
     jobs = args.jobs if args.jobs and args.jobs > 0 else min(32, (os.cpu_count() or 4) * 4)
     jobs = min(jobs, len(repos))
+
+    # Live progress on stderr while repos run, so long commands (pulling 80
+    # repos...) don't look hung. A single self-overwriting counter line — no
+    # ANSI, just \r and space-padding — shown only when stderr is a terminal;
+    # failures are echoed as permanent lines the moment they happen. The
+    # collated report below is untouched by any of this.
+    total = len(repos)
+    show_progress = sys.stderr.isatty()
+
+    def clear_progress():
+        if show_progress:
+            cols = shutil.get_terminal_size().columns
+            sys.stderr.write("\r" + " " * (cols - 1) + "\r")
+            sys.stderr.flush()
+
+    def progress(done, repo, returncode):
+        if not show_progress:
+            return
+        cols = shutil.get_terminal_size().columns
+        if returncode != 0:
+            clear_progress()
+            print(f"{repo}: failed (exit {returncode})", file=sys.stderr)
+        line = f"[{done}/{total}] {repo}"
+        sys.stderr.write("\r" + line[:cols - 1].ljust(cols - 1))
+        sys.stderr.flush()
+
+    results = {}
     if jobs == 1:
-        results = [run_in_repo(root, repo, git_args) for repo in repos]
+        for done, repo in enumerate(repos, 1):
+            _, returncode, output = run_in_repo(root, repo, git_args)
+            results[repo] = (returncode, output)
+            progress(done, repo, returncode)
     else:
         with ThreadPoolExecutor(max_workers=jobs) as pool:
-            results = list(pool.map(lambda r: run_in_repo(root, r, git_args), repos))
+            futures = [pool.submit(run_in_repo, root, r, git_args) for r in repos]
+            for done, future in enumerate(as_completed(futures), 1):
+                repo, returncode, output = future.result()
+                results[repo] = (returncode, output)
+                progress(done, repo, returncode)
+    clear_progress()
 
-    # `results` is already in sorted repo order (map preserves input order).
+    # Report in sorted repo order regardless of completion order.
     failed = []
-    for repo, returncode, output in results:
+    for repo in repos:
+        returncode, output = results[repo]
         ok = returncode == 0
         if not ok:
             failed.append(repo)

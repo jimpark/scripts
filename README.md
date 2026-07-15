@@ -243,11 +243,17 @@ It scans the **immediate subdirectories** (no recursion) for anything with a
 `.git` entry — normal clones, worktree checkouts, and submodule checkouts all
 count — runs the command in each, and prints one section per repo (in sorted
 name order, stdout and stderr merged) followed by a summary of successes and
-failures.
+failures. **Symlinked directories are followed**, deduped by resolved path so
+a repo reachable under two names only runs once (the real directory's name
+wins over a symlink's).
 
 Repos are processed **in parallel** by default, which is what makes network
 commands like `fetch`/`pull` across a dozen repos fast; the report is
-deterministic regardless.
+deterministic regardless. While they run, a **live progress counter**
+(`[12/80] <last repo finished>`) ticks on stderr so a long pull/rebase pass
+never looks hung, and any failure is echoed the moment it happens. The
+counter only appears when stderr is a terminal, so redirected runs stay
+clean.
 
 ### Usage
 
@@ -290,10 +296,16 @@ Run `python git-batch.py --help` for the full reference.
 - If the git args themselves start with a dash before any subcommand, put `--`
   first so the script's own option parser doesn't claim them
   (e.g. `git-batch -- -c core.pager=cat log -1`).
-- Interactive commands aren't supported: each repo's git runs with stdin
-  closed and its output captured, so anything that prompts (a passphrase, an
-  editor) will fail rather than hang. Use non-interactive variants
-  (`--ff-only`, `--no-edit`, credential helpers).
+- **Interactive commands aren't supported — they fail fast, never hang.** A
+  batch run can't answer a prompt, and with output captured a prompt would be
+  an invisible hang (git asks on `/dev/tty`, which you'd never see). So each
+  repo's git runs with stdin closed, `GIT_TERMINAL_PROMPT=0` (credential
+  prompts become errors), `GIT_EDITOR=false` (an attempted editor launch
+  fails — pass `--no-edit` or `-m`), and ssh in `BatchMode` (skipped if you
+  set your own `GIT_SSH_COMMAND`/`GIT_SSH`). Agent-loaded keys, passwordless
+  keys, and credential helpers still work — only *prompting you* is disabled,
+  and the failing repo shows up immediately in the progress line and the
+  report.
 - The exit status is aggregate: `0` only if the command succeeded in **every**
   repo, `1` if any failed (the summary lists which).
 
