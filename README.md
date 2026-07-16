@@ -17,6 +17,7 @@ for each are below.
 | [`baseconv.py`](#baseconvpy) | Convert a value between binary, decimal, octal, hex, and base64. |
 | [`bedrock-copilot.py`](#bedrock-copilotpy) | Launch the GitHub Copilot CLI against a model on AWS Bedrock, with model + effort pickers. |
 | [`clang-query-run.py`](#clang-query-runpy) | Run any `clang-query` AST matcher across a whole compile DB, in parallel, and emit an AI-ready investigation packet. |
+| [`claude-user.py`](#claude-userpy) | Launch `claude` as a named account — keep a personal and an enterprise login side by side. |
 | [`configure-vscode-bedrock.py`](#configure-vscode-bedrockpy) | Point the Claude Code VS Code extension at AWS Bedrock, safely. |
 | [`cpp-unicode-escapes.py`](#cpp-unicode-escapespy) | Rewrite misused `\xNNNN` escapes as proper `\uNNNN` in C++ string/char literals. |
 | [`delete-branch.py`](#delete-branchpy) | Interactively check off Git branches (local and remote) — even whole folders — and delete them. |
@@ -697,6 +698,89 @@ bedrock-copilot --op-key-ref "op://Private/AWS/access key id" \
   installs LiteLLM from the script's inline dependencies). The
   [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) is needed
   only for the `--op-*` flags.
+
+---
+
+## `claude-user.py`
+
+Launches **`claude` as a named account**, so a personal login and an enterprise
+login can sit side by side without either one logging the other out. Each
+account is a directory named `~/.claude-<name>`; the script points
+`CLAUDE_CONFIG_DIR` at it and hands off to `claude`.
+
+```sh
+claude-user personal      # ≡ CLAUDE_CONFIG_DIR=~/.claude-personal claude
+```
+
+With no name it lists the accounts it finds and lets you pick one. Naming an
+account that doesn't exist offers to create it, so a new account is just a
+matter of launching it — `claude` then prompts for `/login`.
+
+### Usage
+
+```sh
+claude-user [name] [claude args…]
+```
+
+or invoke the script directly:
+
+```sh
+uv run claude-user.py [name] [claude args…]
+```
+
+```sh
+claude-user                      # pick an account from a list
+claude-user personal             # launch claude as the personal account
+claude-user personal --resume    # extra arguments go to claude
+claude-user --list               # list accounts and exit
+claude-user --create work        # make ~/.claude-work without being asked
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `-l`, `--list` | List the accounts (name and directory) and exit. |
+| `-c`, `--create` | Create the account's directory if it doesn't exist, without prompting. |
+| `-V`, `--version` | Print the version and exit. |
+
+Options *before* the name are the script's; the name and everything after it go
+to `claude` verbatim — so `claude-user work --list` lists claude's sessions, not
+accounts. Forwarding therefore needs a name; use `--` to pass one that looks
+like an option.
+
+### Notes & caveats
+
+- **The default `~/.claude` is deliberately not listed.** That's what bare
+  `claude` already uses, so it needs no wrapper — keep the everyday account
+  there and give the other one a name.
+- **Isolation works on every platform, but by two different routes.**
+  `CLAUDE_CONFIG_DIR` moves the whole config tree, and on Linux/Windows the
+  credentials sit inside it as `.credentials.json`. macOS keeps credentials in
+  the login Keychain instead, and isolation still holds because `claude` derives
+  the Keychain item's service name from a hash of the config directory path.
+  Note that the official documentation currently claims the opposite — that
+  macOS credentials are shared across config directories. Verified against
+  **claude 2.1.211**: run with an empty config directory on a logged-in Mac, it
+  reports "Not logged in", which only happens if the Keychain lookup missed.
+  Worth re-checking if a future version regresses.
+- **On macOS the spelling of the path is load-bearing**, as a consequence of
+  that hash: two spellings of the same directory hash differently and would each
+  get their own Keychain item, showing up as a surprise logout. The script
+  always canonicalises the path, so a given name maps to one string forever —
+  but a hand-rolled `CLAUDE_CONFIG_DIR=~/.claude-personal` in your shell is a
+  *different* account from `CLAUDE_CONFIG_DIR=/Users/you/.claude-personal`.
+- Creating an account only makes the directory; the login happens inside
+  `claude`. Accounts are switched per invocation, never globally, so a shell
+  with `claude-user personal` running doesn't disturb anything else.
+- Naming a missing account **non-interactively** is an error rather than a
+  silent create, on the grounds that a script naming an account that isn't there
+  has a typo, not a new account. `--create` says yes in advance.
+
+Exit status: `0` claude ran (its own status is passed through), or `--list`
+succeeded · `1` no accounts found, unknown account, `claude` not on `PATH`, or
+the pick was cancelled · `2` usage error (bad or missing arguments).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies) and
+[Claude Code](https://claude.com/claude-code) (`claude`) on `PATH`.
 
 ---
 
