@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Wrapper so 'update-scripts <args>' runs the script via uv from any directory.
+# ${BASH_SOURCE[0]} is this file; its folder holds the script. "$@" forwards all args.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec uv run "$here/update-scripts.py" "$@"

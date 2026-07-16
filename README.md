@@ -33,6 +33,7 @@ for each are below.
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
 | [`unicode-clipboard.py`](#unicode-clipboardpy) | Copy Unicode characters to the clipboard by codepoint, so you can paste the untypeable. |
 | [`unicode-info.py`](#unicode-infopy) | Fetch and display Unicode character information for a codepoint. |
+| [`update-scripts.py`](#update-scriptspy) | Update these scripts in place by fast-forwarding the checkout they live in. |
 
 **macOS:** Each script has a matching bash wrapper with the same base name (e.g. `backport`, `baseconv`). Add the `scripts/` folder to your `PATH` and invoke any script by its bare name — no `python` prefix, no directory qualifier needed.
 
@@ -1882,3 +1883,74 @@ Exit status: `0` you quit normally (whether or not you opened anything) ·
 **Requirements:** Python 3.11+ (standard library only), Git on `PATH`, and the
 `branch_tui.py`, `editor_config.py`, and `editor_ide.py` modules beside it (all
 shared with `git-open.py` and `git-grep.py`).
+
+---
+
+## `update-scripts.py`
+
+Updates **these scripts in place**, by pulling from git. Since the scripts run
+straight out of their checkout — the folder holding them is on your `PATH`, with
+no separate install step — updating them is just bringing that checkout up to
+date:
+
+```sh
+update-scripts
+```
+
+It finds the repository from **its own location** rather than a hardcoded path,
+so it updates whichever checkout you ran it from, wherever that lives on
+whichever machine. Afterwards it reports the commits it applied and a diffstat,
+so you can see what actually changed.
+
+### Usage
+
+```sh
+update-scripts [options]
+```
+
+or invoke the script directly:
+
+```sh
+python update-scripts.py [options]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `-n`, `--dry-run` | Fetch and show what *would* be applied, changing nothing. |
+| `-s`, `--stash` | Set uncommitted changes aside for the update, then restore them. |
+| `-q`, `--quiet` | Print only the summary line. |
+| `-V`, `--version` | Print the version and exit. |
+
+```sh
+update-scripts             # fast-forward and report what changed
+update-scripts --dry-run   # peek at what's waiting, change nothing
+update-scripts --stash     # update even with local edits in progress
+```
+
+### Notes & caveats
+
+- **It's an update button, not a merge tool.** The update is **fast-forward
+  only**; nothing is ever pushed and no branch is ever switched. If your branch
+  has diverged — local commits *and* upstream commits — it stops and prints the
+  `git rebase` you'd need, rather than quietly rebasing or writing a merge
+  commit on your behalf.
+- **Uncommitted changes stop it before anything is touched**, and are listed so
+  you can deal with them. `--stash` overrides that; the stash includes untracked
+  files, so an incoming commit can't collide with one mid-update.
+- **A conflicting restore never loses work.** If `--stash` updates cleanly but
+  the changes won't reapply, it says so, names the conflict, and leaves them in
+  the stash — `git stash pop` recovers them. The exit status is `1` in that case
+  even though the update itself succeeded.
+- **Updating the running script is safe.** Python reads the source fully before
+  executing, so `update-scripts` replacing its own file mid-run can't affect the
+  run in progress; the new version takes effect next time.
+- Gitignored files (`__pycache__/`, `.git-open-config`, …) don't count as
+  uncommitted changes, so build artifacts and local editor config never block an
+  update.
+
+Exit status: `0` updated, or already up to date · `1` uncommitted changes,
+diverged branch, no upstream, not a repo, or git failed · `2` usage error (bad
+or missing arguments).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies) and Git
+on `PATH`.
