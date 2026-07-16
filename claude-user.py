@@ -47,12 +47,33 @@ Examples:
     claude-user.py personal --resume forward extra arguments to claude
     claude-user.py --list            list accounts and exit
     claude-user.py --create work     make ~/.claude-work without being asked
+    claude-user.py -c --theme light-ansi work
+                                     create with an explicit theme
 
 Naming an account that does not exist offers to create it, so a new account
 is just a matter of launching it; claude then prompts for /login. The offer
 needs a terminal to answer it — non-interactive runs get an error instead, on
 the grounds that a script naming a missing account has a typo, not a new
 account. --create says yes in advance, for setup scripts.
+
+A new account is not empty: the parts of ~/.claude that are *content* rather
+than identity — skills, agents, commands, CLAUDE.md, keybindings, plugins —
+are symlinked into it, so they are written once and shared by every account.
+
+Preferences (settings.json) are *copied* at creation instead, and diverge
+freely afterwards. A symlink would share writes: one account's /model change
+— or one of claude's own one-time settings migrations — would silently
+rewrite every other account. The copy still carries over what is worth
+keeping (notably attribution and enabled plugins), and a per-account
+settings.json is what makes per-account **themes** possible: each new
+account gets a theme that contrasts with the default account's, so which
+account a session belongs to is visible at a glance. Pick it at the creation
+prompt or with --theme.
+
+What is deliberately neither shared nor copied — transcripts, history, and
+(off macOS) the login itself — is spelled out at SHARED_DIRS below.
+--no-share creates a fully isolated account (no links, no copied
+preferences); --link adds newly-shareable entries to an existing one.
 
 Exit status:
     0   claude ran (its own exit status is passed through), or --list succeeded
@@ -61,14 +82,189 @@ Exit status:
     2   usage error (bad/missing arguments; handled by argparse)
 """
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 PREFIX = ".claude-"
+DEFAULT = ".claude"
+
+# What a new account borrows from the default config directory, by symlink.
+#
+# The split is between what you *author* and what an account *is*. Skills,
+# agents, commands, CLAUDE.md, and keybindings are work you'd hate to write
+# twice, and all are read from the config directory, so a fresh account
+# starts without them unless they are linked. plugins/ is shared so that any
+# account's enabledPlugins always name plugins that exist: the shared
+# plugins/ is a superset of what each account enables.
+#
+# settings.json is deliberately NOT here — it is copied at creation instead
+# (see seed_settings), because a symlink would share writes, and because a
+# per-account settings.json is what carries each account's theme.
+#
+# Everything else is deliberately left alone, and two categories are actively
+# dangerous to link:
+#
+#   projects/, history.jsonl, sessions/  Conversation transcripts and prompt
+#       history. Linking these would pour enterprise conversations into the
+#       personal account and back, which is the whole thing the accounts exist
+#       to prevent. (Your memory lives in projects/<project>/memory/, so it
+#       stays per-account too — that is the price of keeping transcripts apart.)
+#   .credentials.json  On Linux and Windows this *is* the login. Linking it
+#       would merge the accounts into one and defeat the point entirely.
+#
+# The rest — caches, sessions, shell snapshots, file history, .claude.json —
+# is per-account state that each login rebuilds for itself.
+SHARED_DIRS = ("agents", "commands", "plugins", "rules", "skills", "themes", "workflows")
+SHARED_FILES = ("CLAUDE.md", "keybindings.json")
+
+# Inert starting content for share targets that don't exist yet in ~/.claude.
+# Verified against claude 2.1.211: an empty CLAUDE.md and an empty object of
+# keybindings both load cleanly and change nothing.
+SEED_CONTENT = {"CLAUDE.md": "", "keybindings.json": "{}\n"}
+
+# The values claude 2.1.211 accepts for the "theme" setting.
+THEMES = ("dark", "light", "dark-daltonized", "light-daltonized",
+          "dark-ansi", "light-ansi")
+
+
+def default_dir() -> str:
+    """Return the default config directory — the one bare `claude` uses."""
+    return os.path.abspath(os.path.join(os.path.expanduser("~"), DEFAULT))
+
+
+def share_into(directory):
+    """Link the shareable parts of the default config dir into `directory`.
+
+    Returns the names linked. Existing entries are never touched, so this is
+    safe to re-run and safe on an account that already has real content.
+
+    Share targets missing from the default config dir are created first —
+    ~/.claude/skills often does not exist yet, and linking to it anyway would
+    leave a broken link that silently starts working later. Directories are
+    created empty; files get the inert content in SEED_CONTENT.
+
+    On Windows, symlinks need Developer Mode or an elevated shell.
+    Directories fall back to NTFS junctions, which need no privilege; files
+    have no unprivileged equivalent (a hardlink would silently detach the
+    first time claude replaced the file by rename), so without the privilege
+    they are skipped with a warning and the account is merely less shared.
+    """
+    source_root = default_dir()
+    if directory == source_root or not os.path.isdir(source_root):
+        return []
+
+    linked, skipped = [], []
+    for name in SHARED_DIRS + SHARED_FILES:
+        source = os.path.join(source_root, name)
+        dest = os.path.join(directory, name)
+        # lexists, not exists: a broken symlink still occupies the name.
+        if os.path.lexists(dest):
+            continue
+        is_dir = name in SHARED_DIRS
+        if not os.path.exists(source):
+            if is_dir:
+                os.makedirs(source, mode=0o700, exist_ok=True)
+            else:
+                try:
+                    with open(source, "x") as f:
+                        f.write(SEED_CONTENT[name])
+                except FileExistsError:
+                    pass
+        try:
+            os.symlink(source, dest, target_is_directory=is_dir)
+        except OSError:
+            if is_dir and os.name == "nt" and make_junction(source, dest):
+                linked.append(name)
+            else:
+                skipped.append(name)
+            continue
+        linked.append(name)
+
+    if skipped:
+        print(
+            f"Warning: could not link: {', '.join(skipped)} — symlinks need "
+            "Developer Mode or an elevated shell on Windows.\n"
+            "         The account still works; it just doesn't share these.",
+            file=sys.stderr,
+        )
+    return linked
+
+
+def make_junction(source, dest):
+    """Create an NTFS junction as the directory-link fallback; True on success.
+
+    Junctions resolve in the filesystem itself, so every program follows
+    them, and creating one needs none of the symlink privilege that Windows
+    puts behind Developer Mode. mklink is a cmd.exe builtin, not a program,
+    hence the `cmd /c`.
+    """
+    proc = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", dest, source],
+        capture_output=True,
+    )
+    return proc.returncode == 0
+
+
+def read_default_settings():
+    """Return the default account's settings as a dict; {} if none/unreadable."""
+    try:
+        with open(os.path.join(default_dir(), "settings.json")) as f:
+            settings = json.load(f)
+        return settings if isinstance(settings, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def pick_default_theme():
+    """Suggest a theme for a new account: one contrasting the default
+    account's, so the difference is visible the moment claude draws."""
+    theme = str(read_default_settings().get("theme", "dark"))
+    return "dark" if theme.startswith("light") else "light"
+
+
+def choose_theme(name, default):
+    """Prompt for the new account's theme; Enter accepts the contrast pick.
+
+    Returns None if cancelled, which cancels the creation — nothing has been
+    created yet at that point. Without a terminal the default is taken, so
+    scripted creation still yields a visually distinct account.
+    """
+    if not sys.stdin.isatty():
+        return default
+    prompt = f"Theme for '{name}' — {', '.join(THEMES)} [{default}]: "
+    while True:
+        try:
+            reply = input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if not reply:
+            return default
+        if reply in THEMES:
+            return reply
+        print(f"Not a theme: {reply}")
+
+
+def seed_settings(directory, theme, inherit):
+    """Write the account's own settings.json: the default account's
+    preferences (when `inherit`) plus this account's theme.
+
+    A copy, deliberately not a symlink. Shared preferences would be shared
+    for *writing* too: any account's /model change — or one of claude's own
+    one-time settings migrations — would silently rewrite every account at
+    once. The copy carries over what is worth keeping (attribution, enabled
+    plugins, tui) and from then on the accounts diverge freely.
+    """
+    settings = read_default_settings() if inherit else {}
+    settings["theme"] = theme
+    with open(os.path.join(directory, "settings.json"), "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
 
 
 def profile_dir(name: str) -> str:
@@ -214,6 +410,22 @@ def main():
         action="store_true",
         help="create the account's directory if it does not exist yet",
     )
+    parser.add_argument(
+        "--no-share",
+        action="store_true",
+        help=f"create the account without linking or copying anything from ~/{DEFAULT}",
+    )
+    parser.add_argument(
+        "--theme",
+        choices=THEMES,
+        help="theme for a newly created account (default: prompt, suggesting "
+             f"one that contrasts with ~/{DEFAULT}'s)",
+    )
+    parser.add_argument(
+        "--link",
+        action="store_true",
+        help="add any missing shared links to an existing account, then launch",
+    )
     parser.add_argument("-V", "--version", action="version", version=__version__)
     args = parser.parse_args()
 
@@ -252,6 +464,10 @@ def main():
                 file=sys.stderr,
             )
             return 1
+        theme = args.theme or choose_theme(name, pick_default_theme())
+        if theme is None:
+            print("Cancelled.", file=sys.stderr)
+            return 1
         try:
             # mode 0700: the directory holds session history and, off macOS,
             # the account's credentials.
@@ -259,7 +475,21 @@ def main():
         except OSError as exc:
             print(f"Error: cannot create '{directory}': {exc}", file=sys.stderr)
             return 1
-        print(f"Created {directory} — claude will ask you to /login.")
+        seed_settings(directory, theme, inherit=not args.no_share)
+        print(f"Created {directory} (theme: {theme}) — claude will ask you to /login.")
+        if not args.no_share:
+            linked = share_into(directory)
+            if linked:
+                print(f"Sharing from ~/{DEFAULT}: {', '.join(linked)}")
+    else:
+        if args.theme:
+            print(f"Note: --theme applies only when creating; '{name}' already "
+                  f"exists. Change its theme with /config inside the session.",
+                  file=sys.stderr)
+        if args.link:
+            linked = share_into(profile_dir(name))
+            print(f"Linked into {name}: {', '.join(linked)}" if linked
+                  else f"Nothing to link: {name} already shares everything it can.")
 
     return launch(name, args.claude_args)
 

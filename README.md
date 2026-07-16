@@ -717,6 +717,30 @@ With no name it lists the accounts it finds and lets you pick one. Naming an
 account that doesn't exist offers to create it, so a new account is just a
 matter of launching it — `claude` then prompts for `/login`.
 
+A new account isn't empty. The parts of `~/.claude` that are **content you
+author** rather than **identity** are symlinked into it, so they're written once
+and shared by every account — and preferences are **copied**, so they carry over
+without coupling the accounts together:
+
+```
+~/.claude-personal/
+  skills/ agents/ commands/ plugins/    ->  ~/.claude/…   (written once,
+  rules/ themes/ workflows/                                shared everywhere)
+  CLAUDE.md  keybindings.json           ->  ~/.claude/…
+  settings.json    (its own copy: your prefs + this account's theme)
+  projects/ sessions/ history.jsonl     (its own — never shared)
+```
+
+Each account also gets its **own theme**, chosen at creation (prompted, or
+`--theme`), defaulting to one that contrasts with `~/.claude`'s — so which
+account you're typing into is visible the moment claude draws.
+
+What's **not** shared matters just as much. `projects/`, `history.jsonl` and
+`sessions/` hold your conversation transcripts; linking them would pour
+enterprise conversations into the personal account and back, defeating the point
+of separate accounts. On Linux and Windows `.credentials.json` *is* the login,
+so linking it would merge the accounts into one.
+
 ### Usage
 
 ```sh
@@ -735,12 +759,17 @@ claude-user personal             # launch claude as the personal account
 claude-user personal --resume    # extra arguments go to claude
 claude-user --list               # list accounts and exit
 claude-user --create work        # make ~/.claude-work without being asked
+claude-user -c --theme light-ansi work   # create with an explicit theme
+claude-user --link work          # add any missing shared links, then launch
 ```
 
 | Option | Effect |
 | ------ | ------ |
 | `-l`, `--list` | List the accounts (name and directory) and exit. |
 | `-c`, `--create` | Create the account's directory if it doesn't exist, without prompting. |
+| `--no-share` | Create the account without linking or copying anything from `~/.claude`. |
+| `--link` | Add any missing shared links to an existing account, then launch. |
+| `--theme <t>` | Theme for a newly created account: `dark`, `light`, `dark-daltonized`, `light-daltonized`, `dark-ansi`, `light-ansi`. Default: prompts, suggesting a contrast with `~/.claude`'s. |
 | `-V`, `--version` | Print the version and exit. |
 
 Options *before* the name are the script's; the name and everything after it go
@@ -752,7 +781,30 @@ like an option.
 
 - **The default `~/.claude` is deliberately not listed.** That's what bare
   `claude` already uses, so it needs no wrapper — keep the everyday account
-  there and give the other one a name.
+  there and give the other one a name. It's also the source every other account
+  links back to, so it's the one to keep.
+- **Sharing never clobbers.** Anything that already exists in the account is
+  left alone, so `--link` is safe to re-run and safe on an account with real
+  content of its own. Share targets missing from `~/.claude` are created first
+  (`skills/` often doesn't exist yet) so links are live rather than dangling:
+  directories empty, `CLAUDE.md`/`keybindings.json` with inert content (an empty
+  file and `{}` — both verified to load cleanly and change nothing).
+- **`settings.json` is copied, not linked.** A symlink would share *writes*: one
+  account's `/model` change — or one of `claude`'s own one-time settings
+  migrations, which we watched fire — would silently rewrite every other
+  account. The copy carries over what's worth keeping (attribution, enabled
+  plugins, tui) and then the accounts diverge freely. It's also where each
+  account's theme lives. There's nothing sensitive in it to worry about:
+  credentials are in the Keychain (or `.credentials.json`), and enterprise
+  policy lives in a machine-wide `managed-settings.json` outside the config dir.
+- **The shared `plugins/` stays coherent with per-account settings.** It's a
+  superset: enabling a plugin from any account installs into the shared
+  `plugins/` but flips `enabledPlugins` only in that account's own settings, so
+  references always resolve.
+- **On Windows, symlinks need Developer Mode or an elevated shell.** The seven
+  shared directories fall back to NTFS junctions, which need no privilege; only
+  `CLAUDE.md` and `keybindings.json` are skipped (with a warning) when the
+  privilege is missing. The account itself always works — it's just less shared.
 - **Isolation works on every platform, but by two different routes.**
   `CLAUDE_CONFIG_DIR` moves the whole config tree, and on Linux/Windows the
   credentials sit inside it as `.credentials.json`. macOS keeps credentials in
