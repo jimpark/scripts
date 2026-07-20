@@ -13,7 +13,9 @@ python tests/test_glob.py
 ```
 
 They use only the standard library (no pytest required) and print an `OK` line
-on success, or raise `AssertionError` on failure.
+on success, or raise `AssertionError` on failure. One exception: `test_latin_runs`
+needs the `regex` module that `latin-runs` itself depends on, so run it with
+`uv run tests/test_latin_runs.py` (the inline dependency is installed for you).
 
 ## Tests
 
@@ -28,3 +30,9 @@ on success, or raise `AssertionError` on failure.
   and literally when it's neither and won't compile. Checks the paths each
   selects — including a glob's anchoring at both ends — and that every
   half-typed query still compiles.
+- **test_latin_runs.py** — Conformance suite for `latin-runs` against the v1.4
+  companion fixture (`docs/latin-run-extraction-tests.json`). Runs every case
+  under the default policy and each declared policy-sensitivity variant under its
+  non-default knob, comparing extracted run substrings exactly (code points, not
+  glyphs). Also verifies each case's `input_codepoints` redundancy list and that
+  every emitted `(start, end)` offset slices back to its run.

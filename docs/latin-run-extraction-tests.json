@@ -1,0 +1,544 @@
+{
+  "$schema_note": "Conformance fixture for 'Latin Run Extraction from Mixed-Script Text', spec v1.4. This file is the machine-readable companion referenced in spec section 12 and is authoritative alongside the plain-text spec source, as ORIGINAL BYTES parsed once by a conforming JSON parser: copies that have passed through an additional encoding layer (embedded in other JSON, code blocks, logs) re-escape backslashes and are not authoritative. Inputs/expected are exact JSON strings; parse with a conforming JSON parser and compare code points, not glyphs.",
+  "spec_version": "1.4",
+  "unicode_min_version": "16.0",
+  "default_policy": {
+    "strip_terminal_punct": true,
+    "numerals_bind_to_latin": false,
+    "trailing_digits_bind": true,
+    "max_bridge": null,
+    "bidi_controls": "strip",
+    "min_latin_letters": 1,
+    "affinity_overrides": {},
+    "cjk_punct_strong": true
+  },
+  "policy_sensitivity_is_exhaustive": false,
+  "notes": [
+    "All expected outputs assume default_policy unless a policy_sensitivity entry states otherwise.",
+    "policy_sensitivity maps knob -> non-default setting -> expected runs under that setting. These entries are SELECTED normative variants, NOT an exhaustive sensitivity map: the absence of an entry for a knob does NOT imply the case is unaffected by that knob (see policy_sensitivity_is_exhaustive and spec section 12). Broad knobs such as min_latin_letters, max_bridge, and affinity_overrides inherently affect many cases.",
+    "input_codepoints, where present, is a redundancy check for cases containing invisible or easily-corrupted characters.",
+    "In default_policy, max_bridge: null represents the specification default of infinity, i.e. no bridge-length limit (spec sections 7.1 and 9). Harnesses must not treat null as zero, missing, or invalid.",
+    "input_codepoints lists are the ground truth for escaping questions: verify a suspected escape (e.g. \\n vs \\\\n) against the parsed string's code points, never against a re-encoded display of this file."
+  ],
+  "cases": [
+    {
+      "id": 1,
+      "tier": "core",
+      "input": "한국어 Windows 11 (23H2) 텍스트",
+      "expected": [
+        "Windows 11 (23H2)"
+      ],
+      "exercises": "sandwich: digits, space, parens"
+    },
+    {
+      "id": 2,
+      "tier": "core",
+      "input": "주소는 https://example.com/a?b=1 입니다",
+      "expected": [
+        "https://example.com/a?b=1"
+      ],
+      "exercises": "sandwich (internal URL glue) + trailing digit commit through SEP '='",
+      "policy_sensitivity": {
+        "trailing_digits_bind": {
+          "off": [
+            "https://example.com/a?b"
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "tier": "core",
+      "input": "macOS™의 기능",
+      "expected": [
+        "macOS™"
+      ],
+      "exercises": "trailing anchor U+2122"
+    },
+    {
+      "id": 4,
+      "tier": "core",
+      "input": "텍스트. © 2026 Watch Tower Bible and Tract Society of Pennsylvania",
+      "expected": [
+        "© 2026 Watch Tower Bible and Tract Society of Pennsylvania"
+      ],
+      "exercises": "leading anchor commits provisionals; stops at LEFT '.'"
+    },
+    {
+      "id": 5,
+      "tier": "core",
+      "input": "텍스트 2026 Watch Tower",
+      "expected": [
+        "Watch Tower"
+      ],
+      "exercises": "provisionals released without anchor",
+      "policy_sensitivity": {
+        "numerals_bind_to_latin": {
+          "on": [
+            "2026 Watch Tower"
+          ]
+        }
+      }
+    },
+    {
+      "id": 6,
+      "tier": "core",
+      "input": "한국어, English 텍스트",
+      "expected": [
+        "English"
+      ],
+      "exercises": "bridging comma excluded both sides"
+    },
+    {
+      "id": 7,
+      "tier": "core",
+      "input": "(존 3:16) 한국어 (John 3:16) 텍스트",
+      "expected": [
+        "(John 3:16)"
+      ],
+      "exercises": "opener as leading anchor, closer as trailing anchor; Hangul-only paren group yields nothing"
+    },
+    {
+      "id": 8,
+      "tier": "core",
+      "input": "English one\n© 2026 Corp",
+      "expected": [
+        "English one",
+        "© 2026 Corp"
+      ],
+      "exercises": "hard-break wall; leading glue after wall; input contains a real U+000A LINE FEED (single JSON escape \\n in source) - the input_codepoints list is the authoritative check against escaping corruption",
+      "input_codepoints": [
+        "U+0045",
+        "U+006E",
+        "U+0067",
+        "U+006C",
+        "U+0069",
+        "U+0073",
+        "U+0068",
+        "U+0020",
+        "U+006F",
+        "U+006E",
+        "U+0065",
+        "U+000A",
+        "U+00A9",
+        "U+0020",
+        "U+0032",
+        "U+0030",
+        "U+0032",
+        "U+0036",
+        "U+0020",
+        "U+0043",
+        "U+006F",
+        "U+0072",
+        "U+0070"
+      ]
+    },
+    {
+      "id": 9,
+      "tier": "core",
+      "input": "한국어 100 GB+ 저장",
+      "expected": [
+        "GB+"
+      ],
+      "exercises": "trailing '+' anchor; bare leading numeral released",
+      "policy_sensitivity": {
+        "numerals_bind_to_latin": {
+          "on": [
+            "100 GB+"
+          ]
+        }
+      }
+    },
+    {
+      "id": 10,
+      "tier": "core",
+      "input": "가나다 ( 라마바",
+      "expected": [],
+      "exercises": "dangling neutral, no host — discarded"
+    },
+    {
+      "id": 11,
+      "tier": "full",
+      "input": "عام ٢٠٢٦ Windows",
+      "expected": [
+        "Windows"
+      ],
+      "exercises": "Arabic-Indic digits are BASE, not provisional glue",
+      "input_codepoints": [
+        "U+0639",
+        "U+0627",
+        "U+0645",
+        "U+0020",
+        "U+0662",
+        "U+0660",
+        "U+0662",
+        "U+0666",
+        "U+0020",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073"
+      ]
+    },
+    {
+      "id": 12,
+      "tier": "full",
+      "input": "عام 2026 Windows",
+      "expected": [
+        "Windows"
+      ],
+      "exercises": "European digits provisional, no anchor, released"
+    },
+    {
+      "id": 13,
+      "tier": "full",
+      "input": "النص © 2026 Example Corp نهاية",
+      "expected": [
+        "© 2026 Example Corp"
+      ],
+      "exercises": "leading + trailing boundaries vs RTL base"
+    },
+    {
+      "id": 14,
+      "tier": "full",
+      "input": "نص ⁨Windows 11⁩ نص",
+      "expected": [
+        "Windows 11"
+      ],
+      "exercises": "control strip -> re-coalesce -> trailing digit-group commit (spec 7.5 rule 2)",
+      "policy_sensitivity": {
+        "trailing_digits_bind": {
+          "off": [
+            "Windows"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+2068",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+0020",
+        "U+0031",
+        "U+0031",
+        "U+2069",
+        "U+0020",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": 15,
+      "tier": "full",
+      "input": "نص ‏Windows نص",
+      "expected": [
+        "Windows"
+      ],
+      "exercises": "unpaired control shed, never absorbed",
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+200F",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+0020",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": 16,
+      "tier": "full",
+      "input": "한국어。English 텍스트",
+      "expected": [
+        "English"
+      ],
+      "exercises": "U+3002 boundary, basic form. NOTE: this case's output is identical whether U+3002 classifies BASE (spec 5.2e) or neutral-SEP, so it does not discriminate the classification; case 24 does."
+    },
+    {
+      "id": 17,
+      "tier": "core",
+      "input": "use Windows 11, 그리고",
+      "expected": [
+        "use Windows 11"
+      ],
+      "exercises": "trailing digits consumed by ',' LEFT anchor (spec 7.5 rule 1); strip_terminal_punct removes host-sentence comma; NOT sensitive to trailing_digits_bind (comma anchor commits regardless). The strip_terminal_punct=off variant is the REGRESSION TEST for spec 11.2: a LEFT anchor must clear open digit-group state, else a later close_group() moves the committed boundary backward and drops the comma.",
+      "policy_sensitivity": {
+        "strip_terminal_punct": {
+          "off": [
+            "use Windows 11,"
+          ]
+        }
+      }
+    },
+    {
+      "id": 18,
+      "tier": "core",
+      "input": "한국어 Windows 11",
+      "expected": [
+        "Windows 11"
+      ],
+      "exercises": "trailing digit group abutting EDGE self-commits",
+      "policy_sensitivity": {
+        "trailing_digits_bind": {
+          "off": [
+            "Windows"
+          ]
+        }
+      }
+    },
+    {
+      "id": 19,
+      "tier": "core",
+      "input": "사과 Apple 5개 주문",
+      "expected": [
+        "Apple"
+      ],
+      "exercises": "abutment exception: digit group contiguous with following BASE released"
+    },
+    {
+      "id": 20,
+      "tier": "core",
+      "input": "값은 file-123 입니다",
+      "expected": [
+        "file-123"
+      ],
+      "exercises": "totality: '-' falls to default SEP, committed transitively by digit group; sensitive to trailing_digits_bind (off: '-123' stays provisional and is released)",
+      "policy_sensitivity": {
+        "trailing_digits_bind": {
+          "off": [
+            "file"
+          ]
+        }
+      }
+    },
+    {
+      "id": 21,
+      "tier": "full",
+      "input": "축하 Party 🎉 완료",
+      "expected": [
+        "Party"
+      ],
+      "exercises": "emoji at a run boundary is never absorbed (basic form). NOTE: does not by itself discriminate STOP from SEP affinity for the pictographic - both yield 'Party' here; case 25 is the discriminating test.",
+      "input_codepoints": [
+        "U+CD95",
+        "U+D558",
+        "U+0020",
+        "U+0050",
+        "U+0061",
+        "U+0072",
+        "U+0074",
+        "U+0079",
+        "U+0020",
+        "U+1F389",
+        "U+0020",
+        "U+C644",
+        "U+B8CC"
+      ]
+    },
+    {
+      "id": 22,
+      "tier": "core",
+      "input": "사과 Apple 5 개 주문",
+      "expected": [
+        "Apple 5"
+      ],
+      "exercises": "spaced digit group closes before run end -> self-commits; deliberate contrast with case 19; sensitive to trailing_digits_bind (off: digit group does not self-commit)",
+      "policy_sensitivity": {
+        "trailing_digits_bind": {
+          "off": [
+            "Apple"
+          ]
+        }
+      }
+    },
+    {
+      "id": 23,
+      "tier": "full",
+      "input": "한국어 Windows 1️⃣ 텍스트",
+      "expected": [
+        "Windows"
+      ],
+      "exercises": "cluster-wide STOP test (spec 7.3 step 3): keycap U+0031 U+FE0F U+20E3 is STOP, not DIGIT",
+      "input_codepoints": [
+        "U+D55C",
+        "U+AD6D",
+        "U+C5B4",
+        "U+0020",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+0020",
+        "U+0031",
+        "U+FE0F",
+        "U+20E3",
+        "U+0020",
+        "U+D14D",
+        "U+C2A4",
+        "U+D2B8"
+      ]
+    },
+    {
+      "id": 24,
+      "tier": "full",
+      "input": "한국어 Alpha。Beta 텍스트",
+      "expected": [
+        "Alpha",
+        "Beta"
+      ],
+      "exercises": "U+3002 classified BASE (spec 5.2e); prevents LATIN-NEUTRAL-LATIN sandwich merge; discriminating test for cjk_punct_strong",
+      "policy_sensitivity": {
+        "cjk_punct_strong": {
+          "off": [
+            "Alpha。Beta"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+D55C",
+        "U+AD6D",
+        "U+C5B4",
+        "U+0020",
+        "U+0041",
+        "U+006C",
+        "U+0070",
+        "U+0068",
+        "U+0061",
+        "U+3002",
+        "U+0042",
+        "U+0065",
+        "U+0074",
+        "U+0061",
+        "U+0020",
+        "U+D14D",
+        "U+C2A4",
+        "U+D2B8"
+      ]
+    },
+    {
+      "id": 25,
+      "tier": "full",
+      "input": "축하 Party 🎉™ 완료",
+      "expected": [
+        "Party"
+      ],
+      "exercises": "Extended_Pictographic STOP blocks the trailing scan from reaching a later LEFT anchor (U+2122); a SEP misclassification of the emoji would yield 'Party 🎉™'",
+      "input_codepoints": [
+        "U+CD95",
+        "U+D558",
+        "U+0020",
+        "U+0050",
+        "U+0061",
+        "U+0072",
+        "U+0074",
+        "U+0079",
+        "U+0020",
+        "U+1F389",
+        "U+2122",
+        "U+0020",
+        "U+C644",
+        "U+B8CC"
+      ]
+    },
+    {
+      "id": 26,
+      "tier": "core",
+      "input": "한국어 (Example.) 텍스트",
+      "expected": [
+        "(Example.)"
+      ],
+      "exercises": "spec 10.1 iterative terminal stripping: run-final ')' is not a terminal, so the period is protected; output identical under strip_terminal_punct=off"
+    },
+    {
+      "id": 27,
+      "tier": "core",
+      "input": "한국어 Example.) 텍스트",
+      "expected": [
+        "Example.)"
+      ],
+      "exercises": "spec 10.1 malformed-nesting resolution: unmatched retained closer still protects the period (retention is normative); output identical under strip_terminal_punct=off"
+    },
+    {
+      "id": 28,
+      "tier": "full",
+      "input": "한국어 Windows １１",
+      "expected": [
+        "Windows"
+      ],
+      "exercises": "full-width digits U+FF10-U+FF19: BASE under spec 5.2e strengthening, and never DIGIT affinity (spec 7.3, ASCII-only) - unlike ASCII digits (case 18) they are never captured as a trailing digit group. NOTE: output is identical under cjk_punct_strong=off (NEUTRAL with default SEP affinity, no anchor, released), so this case pins the default but does not discriminate the knob; case 29 does.",
+      "input_codepoints": [
+        "U+D55C",
+        "U+AD6D",
+        "U+C5B4",
+        "U+0020",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+0020",
+        "U+FF11",
+        "U+FF11"
+      ]
+    },
+    {
+      "id": 29,
+      "tier": "full",
+      "input": "한국어 Alpha１Beta 텍스트",
+      "expected": [
+        "Alpha",
+        "Beta"
+      ],
+      "exercises": "discriminating test that full-width DIGITS specifically (not only punctuation) are in the spec 5.2e strengthening set; a NEUTRAL classification sandwich-merges to a single run",
+      "policy_sensitivity": {
+        "cjk_punct_strong": {
+          "off": [
+            "Alpha１Beta"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+D55C",
+        "U+AD6D",
+        "U+C5B4",
+        "U+0020",
+        "U+0041",
+        "U+006C",
+        "U+0070",
+        "U+0068",
+        "U+0061",
+        "U+FF11",
+        "U+0042",
+        "U+0065",
+        "U+0074",
+        "U+0061",
+        "U+0020",
+        "U+D14D",
+        "U+C2A4",
+        "U+D2B8"
+      ]
+    }
+  ]
+}

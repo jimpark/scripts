@@ -29,6 +29,7 @@ for each are below.
 | [`git-prune.py`](#git-prunepy) | Delete local Git branches that no longer exist on a remote. |
 | [`git-switch.py`](#git-switchpy) | Interactive, vim-style Git branch switcher with a collapsible folder tree and remote branches. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
+| [`latin-runs.py`](#latin-runspy) | Extract embedded Latin-script runs (with their neutral glue) from mixed-script Unicode text. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
 | [`unicode-clipboard.py`](#unicode-clipboardpy) | Copy Unicode characters to the clipboard by codepoint, so you can paste the untypeable. |
@@ -1232,6 +1233,120 @@ Exit status: `0` success · `1` the file is not a readable `.docx` ·
 `2` usage error (bad or missing arguments).
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies).
+
+---
+
+## `latin-runs.py`
+
+Extracts every embedded **Latin-script run** — English phrases, product names,
+URLs, version strings, copyright notices — from text whose primary content is
+one or more **non-Latin scripts** (Korean, Arabic, Hebrew, …), including
+right-to-left ones. Each run is reported with the language-**neutral glue**
+(digits, spaces, punctuation, symbols) that logically belongs to it, and with
+its `(start, end)` offsets.
+
+The whole difficulty is the neutral characters. A comma, a space, a `©`, or a
+digit carries no script identity of its own, yet it may be an integral part of a
+Latin entity (`Windows 11 (23H2)`, `© 2026 Example Corp`, `macOS™`) — or it may
+be a bridge between the surrounding non-Latin text and an English phrase, in
+which case it belongs to neither. This tool folds neutral glue **in** when it
+belongs (internally, trailing, or leading) and leaves it **out** when it bridges
+or dangles, in all positions. It is a conforming implementation of *"Latin Run
+Extraction from Mixed-Script Text"*, spec v1.4 (in
+[`docs/`](docs/latin-run-extraction-spec-v1.4.md)), which adapts the
+neutral-resolution phase of the Unicode Bidirectional Algorithm (UAX #9): every
+strong script is treated alike and all work happens in **logical order**, so the
+result is indifferent to RTL display.
+
+### Usage
+
+```sh
+latin-runs [FILE] [policy options]
+```
+
+or invoke the script directly:
+
+```sh
+uv run latin-runs.py [FILE] [policy options]
+```
+
+- Pass `FILE` to read a UTF-8 text file, or **omit it to read from stdin**.
+- Each extracted run prints as `start  end  text` (offsets in **code points**);
+  `--json` emits one JSON object per run instead.
+- Run `latin-runs --help` for the full reference.
+
+```sh
+# a URL embedded in Korean, from stdin
+echo '주소는 https://example.com/a?b=1 입니다' | latin-runs
+#      4     29  https://example.com/a?b=1
+
+# a copyright line embedded after a Korean sentence
+echo '텍스트. © 2026 Watch Tower Bible and Tract Society of Pennsylvania' | latin-runs
+
+# machine-readable output
+latin-runs --json report.txt
+
+# capture a bare leading year that defaults would drop (© would anchor it)
+echo '한국어 100 GB+ 저장' | latin-runs --numerals-bind-to-latin   # -> 100 GB+
+```
+
+### Policy knobs
+
+Every knob from spec §9 is exposed as a flag; the engine takes the defaults
+(which match the companion conformance fixture) unless you override them.
+
+| Option | Effect |
+| ------ | ------ |
+| `--no-strip-terminal-punct` | Keep a trailing `. , ; : ! ?` that was captured as glue (default: strip it — it usually punctuates the *host* sentence). |
+| `--numerals-bind-to-latin` | Let a **leading** digit group bind to adjacent Latin without a `©`-style anchor (captures a bare `2026 Windows`). |
+| `--no-trailing-digits-bind` | Make **trailing** digit groups purely provisional, so `Windows 11` → `Windows` (symmetric with leading behaviour). |
+| `--max-bridge <N>` | Refuse the sandwich merge when the neutral run between two Latin runs is longer than `N` grapheme clusters (default: `inf`, no limit). |
+| `--bidi-controls {strip,preserve_pairs}` | How to treat bidi formatting characters (default: `strip` them before analysis). |
+| `--min-latin-letters <N>` | Minimum Latin letters for a run to be emitted (default: `1`). |
+| `--affinity-override CP=AFFINITY` | Move a character's binding affinity, e.g. `U+00AE=RIGHT` to make `®` a prefix anchor. Repeatable. `AFFINITY` ∈ `RIGHT,LEFT,SEP,DIGIT,STOP`. |
+| `--no-cjk-punct-strong` | Do **not** strengthen CJK punctuation / full-width forms to strong (they become neutral glue, so `Alpha。Beta` merges into one run). |
+
+```sh
+# keep host-sentence punctuation and require at least 3 Latin letters
+latin-runs --no-strip-terminal-punct --min-latin-letters 3 notes.txt
+
+# treat the registered-trademark sign as a leading anchor
+echo '한국어 ®Brand 텍스트' | latin-runs --affinity-override U+00AE=RIGHT   # -> ®Brand
+```
+
+### Notes & caveats
+
+- **Offsets are code points** into the original string (the documented unit).
+  In the default `strip` mode `text[start:end]` is exactly the emitted run; under
+  `--bidi-controls preserve_pairs` the span may still enclose shed (unmatched)
+  control characters, so the emitted text can be shorter than the raw slice.
+- **`preserve_pairs` is conservative by design.** Unmatched isolates/embeddings
+  are always shed, and a matched pair is retained inside a run only when the
+  whole pair falls within that one run; a pair that would straddle a run boundary
+  is excluded entirely (spec §8.2). For matching, indexing, and translation
+  memory, the default `strip` is the right choice.
+- **Full-width digits are never captured as a trailing version number.** Unlike
+  ASCII digits (`Windows 11` → `Windows 11`), `Windows １１` yields `Windows`:
+  a full-width character signals CJK context and is treated as host text
+  (spec §5.2e, §7.3), the same reasoning that makes Arabic-Indic digits strong.
+- **Unicode data comes from two sources**, reported by `latin-runs
+  --unicode-version`: the third-party `regex` module supplies UAX #29 grapheme
+  segmentation and the `Script` / `Script_Extensions` / `Extended_Pictographic`
+  / `Regional_Indicator` properties; the standard library's `unicodedata`
+  supplies general categories. The spec's minimum reference is Unicode 16.0;
+  documented differences from a later UCD version are not conformance failures.
+- Conformance is checked by `tests/test_latin_runs.py`, which drives all 29 cases
+  of the machine-readable fixture (`docs/latin-run-extraction-tests.json`) plus
+  its per-knob sensitivity variants.
+
+Exit status: `0` success · `1` the input could not be read or decoded ·
+`2` usage error (bad or missing arguments).
+
+**Requirements:** Python 3.7+ and the [`regex`](https://pypi.org/project/regex/)
+module (Python's `unicodedata` has no `Script` property or grapheme
+segmentation). The dependency is declared inline in the script, so the wrapper's
+`uv run` installs it automatically; if you invoke the `.py` with plain Python,
+`pip install regex` first.
 
 ---
 
