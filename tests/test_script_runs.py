@@ -89,10 +89,13 @@ def run_suite(cases, defaults, label):
         check_codepoints(case)
 
         # A generalization case names its own target script; the Latin suite
-        # inherits the fixture default (spec 12.1, 12.2).
+        # inherits the fixture default (spec 12.1, 12.2). An isolate case adds a
+        # per-case "policy" object, merged over the defaults for that case only
+        # (spec 12.3) — the knobs it exercises are off by default.
         base = dict(defaults)
         if "target_script" in case:
             base["target_script"] = case["target_script"]
+        base.update(case.get("policy", {}))
 
         # Default policy.
         pol = policy_from(base)
@@ -120,7 +123,11 @@ def run_suite(cases, defaults, label):
 
 def check_script_validation():
     """target_script must be a real Script value for the active UCD (spec 2.2)."""
-    for bad in ("Bogus", "Common", "Inherited", "Unknown", "Latin}", ""):
+    bad_values = ("Bogus", "Latin}", "",
+                  # the four ISO 15924 special codes, by name and by alias
+                  "Common", "Zyyy", "Inherited", "Zinh", "Unknown", "Zzzz",
+                  "Katakana_Or_Hiragana", "Hrkt")
+    for bad in bad_values:
         try:
             script_runs.Policy(target_script=bad)
         except script_runs.ScriptError:
@@ -131,6 +138,49 @@ def check_script_validation():
         script_runs.Policy(target_script=good)
 
 
+def check_script_listing():
+    """Every script --help lists must be usable, and spelled for the right script.
+
+    The listing is read out of the regex module's private property tables, so
+    this also fails loudly if a future release moves them (the listing would
+    silently shrink to the fallback examples).
+    """
+    names = script_runs.available_scripts()
+    assert len(names) > 100, (
+        "only %d scripts listed — has the regex module's property table moved? "
+        "(%r)" % (len(names), names[:5]))
+    assert names == tuple(sorted(names)), "script listing is not sorted"
+    assert len(set(names)) == len(names), "script listing has duplicates"
+
+    values = script_runs.regex._regex_core.PROPERTIES["SCRIPT"][1]
+    for name in names:
+        # Accepted as typed, and naming a script the active UCD really has.
+        script_runs.Policy(target_script=name)
+        assert script_runs._normalize_script(name) in values, (
+            "listed script %r is not a UCD Script value" % name)
+
+    # A cosmetic display name must resolve to the very script it is keyed under:
+    # 'Han' for HANI, not merely to something that happens to compile.
+    for key, shown in script_runs._SCRIPT_DISPLAY.items():
+        assert key in values, (
+            "display table has a stale entry %r; the active UCD has no such "
+            "script" % key)
+        assert values.get(script_runs._normalize_script(shown)) == values[key], (
+            "display name %r does not resolve to script %r" % (shown, key))
+
+    # None of the four special codes may be offered as a target.
+    for special in ("Common", "Inherited", "Unknown", "Katakana_Or_Hiragana"):
+        assert special not in names, "%s must not be listed as a target" % special
+
+    # Spot-check that a listed non-Latin script really extracts, spelled either
+    # way (loose matching), and that a script with no characters in the text
+    # yields nothing rather than erroring.
+    for spelling in ("Old_Hungarian", "old hungarian", "Hung"):
+        pol = script_runs.Policy(target_script=spelling)
+        assert extracted("한국어 𐲀𐲂𐲇 텍스트", pol) == ["𐲀𐲂𐲇"], spelling
+        assert extracted("한국어 Windows 11", pol) == []
+
+
 def main():
     with open(FIXTURE, encoding="utf-8") as fh:
         fixture = json.load(fh)
@@ -138,9 +188,13 @@ def main():
     defaults = fixture["default_policy"]
     cases = fixture["cases"]
     gcases = fixture.get("generalization_cases", [])
+    icases = fixture.get("isolate_cases", [])
+    qcases = fixture.get("straight_quote_cases", [])
 
     checked = run_suite(cases, defaults, "latin")
     checked += run_suite(gcases, defaults, "generalization")
+    checked += run_suite(icases, defaults, "isolate")
+    checked += run_suite(qcases, defaults, "straight-quote")
 
     # Structural edge cases beyond the fixture (spec section 13), plus the
     # target-script parameterization itself.
@@ -167,9 +221,11 @@ def main():
     assert script_runs.Policy(numerals_bind_to_target=True).numerals_bind_to_latin
 
     check_script_validation()
+    check_script_listing()
 
-    print("OK: %d fixture assertions (%d Latin cases + %d generalization cases) "
-          "+ edge cases passed" % (checked, len(cases), len(gcases)))
+    print("OK: %d fixture assertions (%d Latin + %d generalization + %d isolate "
+          "+ %d straight-quote cases) + edge cases passed"
+          % (checked, len(cases), len(gcases), len(icases), len(qcases)))
 
 
 if __name__ == "__main__":

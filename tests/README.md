@@ -31,13 +31,20 @@ installed for you).
   and literally when it's neither and won't compile. Checks the paths each
   selects — including a glob's anchoring at both ends — and that every
   half-typed query still compiles.
-- **test_script_runs.py** — Conformance suite for `script-runs` against the v2.0
+- **test_script_runs.py** — Conformance suite for `script-runs` against the v2.2
   companion fixture (`docs/script-run-extraction-tests.json`): all 29 Latin
-  backward-compatibility cases plus the 11 generalization cases, each under its
-  own target script (Greek, Cyrillic, Arabic, Hebrew, Latin). Runs every case
+  backward-compatibility cases, the 11 generalization cases (each under its
+  own target script — Greek, Cyrillic, Arabic, Hebrew, Latin), the 7
+  isolate-binding cases of spec §12.3 and the 7 straight-quote cases of §12.4,
+  each of which carries a per-case `policy` object because the knob it exercises
+  is off by default. Runs every case
   under the default policy and each declared policy-sensitivity variant under its
   non-default knob, comparing extracted run substrings exactly (code points, not
   glyphs). Also verifies each case's `input_codepoints` redundancy list — which
   catches a re-escaped fixture or a cross-script confusable (Greek `Α` U+0391 vs
   Latin `A` U+0041) substituted by copy-paste — that every emitted `(start, end)`
   offset slices back to its run, and that an invalid `--script` is rejected.
+  Finally it walks the whole script listing `--help` prints, asserting every
+  name is accepted as typed and resolves to the script it names — which also
+  catches the `regex` module moving the private property tables the listing is
+  read from.

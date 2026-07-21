@@ -14,7 +14,7 @@ Hebrew phrases when those are the target — together with the language-neutral
 "glue" (digits, spaces, punctuation, symbols) that logically belongs to each run.
 
 This is a conforming implementation of "Script Run Extraction from Mixed-Script
-Text", specification v2.0 (see docs/script-run-extraction-spec.md). The hard part
+Text", specification v2.2 (see docs/script-run-extraction-spec.md). The hard part
 is deciding which script-neutral characters (Unicode Script=Common or Inherited)
 fold into a target-script run and which act as a bridge to the surrounding text
 or dangle without a host. The spec adapts the neutral-resolution skeleton of the
@@ -24,11 +24,14 @@ normative pseudocode of the spec's section 11.2 phase for phase:
     1. Classify each grapheme cluster (TARGET / OTHER / NEUTRAL / CONTROL /
        HARD_BREAK) from its "classification code point" (spec section 4.1, 5).
     2. Coalesce adjacent equal-class clusters into runs (section 6).
-    3. Resolve bidi-control clusters (section 8; default: strip + re-coalesce).
+    3. Resolve bidi-control clusters (section 8; default: strip + re-coalesce.
+       With --isolate-binds, matched isolate boundaries are kept as walls
+       that bind their interior neutrals inward -- section 8.5).
     4. Resolve each NEUTRAL run against its strong neighbours: merge when
        sandwiched between target-script text (section 7.1), discard when isolated
        (7.2), or split directionally at mixed boundaries using per-cluster
-       binding affinity (7.3-7.5).
+       binding affinity (7.3-7.5). With --straight-quotes, a boundary " or '
+       first takes opener/closer affinity from its spacing (section 7.3a).
     5. Trim edge whitespace and terminal punctuation, validate, and emit each
        target-script run with its (start, end) offsets (section 10).
 
@@ -55,12 +58,14 @@ UNICODE DATA
 Script, Script_Extensions, Extended_Pictographic, Regional_Indicator and UAX #29
 grapheme segmentation come from the third-party ``regex`` module (its own bundled
 UCD); general categories come from the standard-library ``unicodedata``. The
-active versions are printed by ``--unicode-version``. The spec's minimum
+active versions are printed by ``--unicode-version``, and ``--help`` lists every
+Script value that data offers as a target. The spec's minimum
 reference is Unicode 16.0; character-level differences from a documented later
 UCD version are not conformance failures (spec section 2.2).
 
 Usage:
     script-runs [FILE] [--script SCRIPT] [policy options]
+    script-runs --help                  # ends with every script you may target
     script-runs --script Greek --json report.txt
     echo '한국어 Windows 11 (23H2)' | script-runs
     echo '한국어 Αθήνα 2026 텍스트' | script-runs --script Greek
@@ -68,6 +73,7 @@ Usage:
 
 import argparse
 import json
+import shutil
 import sys
 import unicodedata
 from functools import lru_cache
@@ -135,6 +141,12 @@ EXPLICIT_LEFT = frozenset({
     0x00AE,  # ®  (default LEFT; overridable per section 7.3 / --affinity-override)
 }) | frozenset(ord(c) for c in TERMINALS)
 
+# The two straight (ASCII) quotation marks. Both are General_Category Po, so the
+# §7.3 derivation gives them the default SEP affinity; the optional contextual
+# rule of §7.3a may promote a boundary occurrence to RIGHT (opener) or LEFT
+# (closer). Curly quotes are Pi/Pf and already resolve to RIGHT/LEFT by category.
+STRAIGHT_QUOTES = frozenset({0x0022, 0x0027})   # " and '
+
 
 def _cjk_strong_set():
     """Code points strengthened to OTHER when cjk_punct_strong is on (section 5.2e).
@@ -167,17 +179,117 @@ class ScriptError(ValueError):
     """The configured target_script is not a usable Unicode Script value."""
 
 
-# Suggested in error messages only; any Script name or 4-letter alias the active
-# UCD knows is accepted.
+# Fallback suggestions, used only in error messages when the active UCD's script
+# table cannot be read (see available_scripts).
 _SCRIPT_EXAMPLES = ("Latin", "Greek", "Cyrillic", "Arabic", "Hebrew", "Armenian",
                     "Georgian", "Devanagari", "Thai", "Hangul", "Han")
 
-# Script values that name "no script"; a target must identify a real script,
-# since Common/Inherited characters are the neutrals this algorithm resolves.
+# The four ISO 15924 special codes. None of them identifies a script: Zyyy and
+# Zinh are the neutrals this algorithm resolves rather than extracts, Zzzz is
+# "unknown", and Hrkt exists only for Script_Extensions (no character has
+# Script=Hrkt, so it would match nothing). A target must be a real script.
 _NON_SCRIPTS = frozenset({"common", "zyyy", "inherited", "qaai", "zinh",
-                          "unknown", "zzzz"})
+                          "unknown", "zzzz", "katakana_or_hiragana", "hrkt"})
 
 _RE_SCRIPT_NAME = regex.compile(r"\A[A-Za-z][A-Za-z_ ]*\Z")
+
+
+def _normalize_script(name):
+    """UCD loose matching: case, spaces and underscores are insignificant."""
+    return name.replace("_", "").replace(" ", "").replace("-", "").upper()
+
+
+# Preferred spellings for display. The set of scripts always comes from the
+# active UCD (available_scripts); this table only makes the names pretty, since
+# the regex module's reverse table stores them folded to upper case with the
+# separators dropped (ANATOLIANHIEROGLYPHS) and sometimes keeps the 4-letter
+# alias as the canonical form (HANI for Han). Every spelling here is accepted by
+# the matcher as-is — loose matching means a stale or missing entry can only
+# cost prettiness, never correctness — and tests/test_script_runs.py asserts each
+# one still resolves to the script it names. Anything absent falls back to
+# title case, which is also accepted.
+_SCRIPT_DISPLAY = {
+    "ANATOLIANHIEROGLYPHS": "Anatolian_Hieroglyphs",
+    "BASSAVAH": "Bassa_Vah",
+    "BERIAERFE": "Beria_Erfe",
+    "CANADIANABORIGINAL": "Canadian_Aboriginal",
+    "CAUCASIANALBANIAN": "Caucasian_Albanian",
+    "CYPROMINOAN": "Cypro_Minoan",
+    "DIVESAKURU": "Dives_Akuru",
+    "EGYPTIANHIEROGLYPHS": "Egyptian_Hieroglyphs",
+    "GUNJALAGONDI": "Gunjala_Gondi",
+    "GURUNGKHEMA": "Gurung_Khema",
+    "HANI": "Han",
+    "HANIFIROHINGYA": "Hanifi_Rohingya",
+    "IMPERIALARAMAIC": "Imperial_Aramaic",
+    "INSCRIPTIONALPAHLAVI": "Inscriptional_Pahlavi",
+    "INSCRIPTIONALPARTHIAN": "Inscriptional_Parthian",
+    "KAYAHLI": "Kayah_Li",
+    "KHITANSMALLSCRIPT": "Khitan_Small_Script",
+    "KIRATRAI": "Kirat_Rai",
+    "LAOO": "Lao",
+    "LINEARA": "Linear_A",
+    "LINEARB": "Linear_B",
+    "MASARAMGONDI": "Masaram_Gondi",
+    "MEETEIMAYEK": "Meetei_Mayek",
+    "MENDEKIKAKUI": "Mende_Kikakui",
+    "MEROITICCURSIVE": "Meroitic_Cursive",
+    "MEROITICHIEROGLYPHS": "Meroitic_Hieroglyphs",
+    "MROO": "Mro",
+    "NAGMUNDARI": "Nag_Mundari",
+    "NEWTAILUE": "New_Tai_Lue",
+    "NKOO": "Nko",
+    "NYIAKENGPUACHUEHMONG": "Nyiakeng_Puachue_Hmong",
+    "OLCHIKI": "Ol_Chiki",
+    "OLDHUNGARIAN": "Old_Hungarian",
+    "OLDITALIC": "Old_Italic",
+    "OLDNORTHARABIAN": "Old_North_Arabian",
+    "OLDPERMIC": "Old_Permic",
+    "OLDPERSIAN": "Old_Persian",
+    "OLDSOGDIAN": "Old_Sogdian",
+    "OLDSOUTHARABIAN": "Old_South_Arabian",
+    "OLDTURKIC": "Old_Turkic",
+    "OLDUYGHUR": "Old_Uyghur",
+    "OLONAL": "Ol_Onal",
+    "PAHAWHHMONG": "Pahawh_Hmong",
+    "PAUCINHAU": "Pau_Cin_Hau",
+    "PHAGSPA": "Phags_Pa",
+    "PSALTERPAHLAVI": "Psalter_Pahlavi",
+    "SIGNWRITING": "SignWriting",
+    "SORASOMPENG": "Sora_Sompeng",
+    "SYLOTINAGRI": "Syloti_Nagri",
+    "TAILE": "Tai_Le",
+    "TAITHAM": "Tai_Tham",
+    "TAIVIET": "Tai_Viet",
+    "TAIYO": "Tai_Yo",
+    "TOLONGSIKI": "Tolong_Siki",
+    "TULUTIGALARI": "Tulu_Tigalari",
+    "VAII": "Vai",
+    "WARANGCITI": "Warang_Citi",
+    "YIII": "Yi",
+    "ZANABAZARSQUARE": "Zanabazar_Square",
+}
+
+
+@lru_cache(maxsize=None)
+def available_scripts():
+    """Every Script value the active UCD offers as a target, sorted for display.
+
+    Read out of the regex module's own property tables, so the list tracks
+    whichever UCD that module ships (spec section 2.2) instead of a list baked in
+    here. Those tables are private API; if a future release moves them, the
+    listing degrades to the example names rather than failing.
+    """
+    try:
+        prop_id, values = regex._regex_core.PROPERTIES["SCRIPT"]
+        canonical = regex._regex_core.PROPERTY_NAMES[prop_id][1]
+    except Exception:      # pragma: no cover - depends on the regex release
+        return _SCRIPT_EXAMPLES
+    skip = {values[n] for n in (_normalize_script(s) for s in _NON_SCRIPTS)
+            if n in values}
+    names = [_SCRIPT_DISPLAY.get(name, name.title())
+             for ident, name in canonical.items() if ident not in skip]
+    return tuple(sorted(names))
 
 
 @lru_cache(maxsize=None)
@@ -188,21 +300,24 @@ def script_matcher(script):
     smuggle syntax into the pattern.
     """
     name = script.strip()
+    listing = "run --help for the %d scripts the active UCD offers" % len(
+        available_scripts())
     if not _RE_SCRIPT_NAME.match(name):
         raise ScriptError(
             "%r is not a Unicode Script name (letters, spaces and underscores "
-            "only; e.g. %s)" % (script, ", ".join(_SCRIPT_EXAMPLES)))
-    if name.replace(" ", "_").lower() in _NON_SCRIPTS:
+            "only); %s" % (script, listing))
+    if _normalize_script(name).lower() in {_normalize_script(s).lower()
+                                           for s in _NON_SCRIPTS}:
         raise ScriptError(
-            "%r names no script; target_script must be a real script such as %s"
-            % (script, ", ".join(_SCRIPT_EXAMPLES)))
+            "%r names no script; the target must be a real script — %s"
+            % (script, listing))
     try:
         return regex.compile(r"\p{Script=%s}" % name)
     except regex.error:
         raise ScriptError(
-            "unknown Unicode Script %r for the active UCD (Unicode %s); try one "
-            "of %s, or any other Script name or 4-letter alias"
-            % (script, unicodedata.unidata_version, ", ".join(_SCRIPT_EXAMPLES)))
+            "unknown Unicode Script %r for the active UCD (Unicode %s); %s "
+            "(a 4-letter script alias such as Cyrl works too)"
+            % (script, unicodedata.unidata_version, listing))
 
 
 # ---------------------------------------------------------------------------
@@ -221,12 +336,14 @@ class Policy:
         "target_script", "strip_terminal_punct", "numerals_bind_to_latin",
         "trailing_digits_bind", "max_bridge", "bidi_controls",
         "min_target_letters", "affinity_overrides", "cjk_punct_strong",
+        "isolate_binds", "straight_quotes_contextual",
     )
 
     def __init__(self, target_script=DEFAULT_SCRIPT, strip_terminal_punct=True,
                  numerals_bind_to_latin=False, trailing_digits_bind=True,
                  max_bridge=None, bidi_controls="strip", min_target_letters=1,
                  affinity_overrides=None, cjk_punct_strong=True,
+                 isolate_binds=False, straight_quotes_contextual=False,
                  min_latin_letters=None, numerals_bind_to_target=None):
         script_matcher(target_script)           # validate eagerly (section 2.2)
         self.target_script = target_script
@@ -241,6 +358,8 @@ class Policy:
                                    else min_latin_letters)
         self.affinity_overrides = affinity_overrides or {}   # {codepoint: affinity}
         self.cjk_punct_strong = cjk_punct_strong
+        self.isolate_binds = isolate_binds       # section 8.5
+        self.straight_quotes_contextual = straight_quotes_contextual  # section 7.3a
 
 
 # ---------------------------------------------------------------------------
@@ -358,15 +477,16 @@ def affinity_of(cluster, ccp, policy):
 # A classified grapheme cluster
 # ---------------------------------------------------------------------------
 class Cluster:
-    __slots__ = ("s", "cls", "aff", "ccp", "start", "length")
+    __slots__ = ("s", "cls", "aff", "ccp", "start", "length", "bind")
 
-    def __init__(self, s, cls, aff, ccp, start):
+    def __init__(self, s, cls, aff, ccp, start, bind=None):
         self.s = s              # the grapheme cluster text
         self.cls = cls          # TARGET / OTHER / NEUTRAL / CONTROL / HARD_BREAK
         self.aff = aff          # binding affinity (NEUTRAL only), else None
         self.ccp = ccp          # classification code point (or None)
         self.start = start      # code-point offset of the cluster in the source
         self.length = len(s)    # length in code points
+        self.bind = bind        # isolate wall: RIGHT/LEFT inward direction (8.5)
 
 
 def classify_text(text, policy):
@@ -408,10 +528,18 @@ def classify_text(text, policy):
 # ---------------------------------------------------------------------------
 # Directional neutral-resolution scans (spec section 7.4, 7.5, pseudocode 11.2)
 # ---------------------------------------------------------------------------
-def split_leading(members, policy):
+def split_leading(members, policy, bind=False):
     """Leading glue: L in {OTHER, EDGE}, R = TARGET. Scan right-to-left from the
-    target-script edge; return the number of trailing clusters absorbed."""
+    target-script edge; return the number of trailing clusters absorbed.
+
+    ``bind`` is set when the left neighbour is the opening boundary of a matched
+    isolate (section 8.5). The isolate guarantees these neutrals lie inside the
+    span and so cannot belong to the outer text: run exhaustion then COMMITS the
+    provisionals instead of releasing them. Anchors and STOPs still halt the scan
+    first, so the bind only ever supplies the missing anchor, never overrides one.
+    """
     committed = len(members)  # index; clusters [committed:] are absorbed
+    exhausted = True
     for i in range(len(members) - 1, -1, -1):
         a = members[i].aff
         if a == RIGHT:
@@ -421,14 +549,24 @@ def split_leading(members, policy):
         elif a == SEP or a == DIGIT:
             pass                                # provisional; needs an anchor beyond
         else:                                    # LEFT or STOP
+            exhausted = False
             break
+    if exhausted and bind:
+        committed = 0                           # isolate boundary binds inward
     return len(members) - committed
 
 
-def split_trailing(members, R, policy):
+def split_trailing(members, R, policy, bind=False):
     """Trailing glue: L = TARGET, R in {OTHER, EDGE}. Scan left-to-right from the
-    target-script edge; return the number of leading clusters absorbed."""
+    target-script edge; return the number of leading clusters absorbed.
+
+    ``bind`` is the section 8.5 mirror of ``split_leading``'s: a matched isolate's
+    closing boundary commits on run exhaustion. Because the boundary also makes
+    ``R`` EDGE rather than OTHER, the abutment exception cannot fire against text
+    the isolate has already excluded from the span.
+    """
     committed = -1          # index; clusters [:committed + 1] are absorbed
+    exhausted = True
     group_open = False
     group_end = -1          # index of the last DIGIT in the current group
 
@@ -457,8 +595,14 @@ def split_trailing(members, R, policy):
             close_group(False)
         else:                                    # RIGHT or STOP
             close_group(False)
+            exhausted = False
             break
     close_group(True)
+    if exhausted and bind:
+        # Section 8.5: the isolate's own boundary is the anchor. This deliberately
+        # outranks trailing_digits_bind = off — an explicit per-instance signal
+        # beats a corpus-wide heuristic about trailing numerals.
+        committed = len(members) - 1
     return committed + 1
 
 
@@ -516,6 +660,56 @@ def match_control_pairs(clusters):
     return partner
 
 
+def _is_space_like(c):
+    """True for the neighbours a quote may open after / close before (§7.3a).
+
+    That is: an EDGE (string end, ``None``), a wall (HARD_BREAK, including an
+    isolate wall under §8.5), or whitespace. Non-space separators (`-`, `/`) are
+    deliberately excluded — a quote wedged against one is left ambiguous (SEP).
+    """
+    if c is None or c.cls == HARD_BREAK:
+        return True
+    if c.ccp is None:
+        return False
+    return unicodedata.category(chr(c.ccp)) == "Zs" or c.ccp == 0x09
+
+
+def resolve_straight_quotes(analysis):
+    """Contextual affinity for U+0022 / U+0027 (spec §7.3a); in place.
+
+    Runs on the CONTROL-RESOLVED stream (after §8), so a quote's neighbours are
+    real text, never a stripped control. A straight quote becomes an opener
+    (``RIGHT``) when it follows space/EDGE/an opening anchor and is *not* itself
+    followed by space; a closer (``LEFT``) when it follows non-space and precedes
+    space/EDGE/a closing anchor. Anything else keeps the default ``SEP``.
+
+    Decisions are computed against the pre-pass affinities of neighbours and then
+    applied together, so the result does not depend on iteration order (§11.1).
+    The ambiguous apostrophe cases (`don't`, `O'Brien`, `5'10"`) never reach this
+    rule: they sit inside a TARGET…TARGET sandwich, which §7.1 resolves without
+    ever consulting affinity.
+    """
+    decisions = []
+    for i, c in enumerate(analysis):
+        if c.cls != NEUTRAL or c.ccp not in STRAIGHT_QUOTES:
+            continue
+        prev = analysis[i - 1] if i > 0 else None
+        nxt = analysis[i + 1] if i + 1 < len(analysis) else None
+        space_after = _is_space_like(nxt)
+        open_before = _is_space_like(prev) or (
+            prev is not None and prev.cls == NEUTRAL and prev.aff == RIGHT)
+        close_before = (not _is_space_like(prev)) and (
+            space_after or (nxt is not None and nxt.cls == NEUTRAL
+                            and nxt.aff == LEFT))
+        if open_before and not space_after:
+            decisions.append((i, RIGHT))       # opener facing following text
+        elif close_before:
+            decisions.append((i, LEFT))         # closer facing preceding text
+        # else: unbalanced / wedged -> leave at SEP (conservative)
+    for i, aff in decisions:
+        analysis[i].aff = aff
+
+
 # ---------------------------------------------------------------------------
 # Phase 4: trim, validate (spec section 10)
 # ---------------------------------------------------------------------------
@@ -571,7 +765,26 @@ def extract_script_runs(text, policy=None):
     # matched pairs.
     partner = (match_control_pairs(all_clusters)
                if policy.bidi_controls == "preserve_pairs" else {})
-    analysis = [c for c in all_clusters if c.cls != CONTROL]
+
+    # Section 8.5: with isolate_binds on, the boundaries of a MATCHED isolate
+    # survive control resolution as HARD_BREAK-class walls carrying an inward
+    # bind direction. Everything else -- unmatched controls, standalone marks and
+    # every embedding (LRE/RLE/LRO/RLO...PDF, which do not isolate their content
+    # the way LRI/RLI/FSI...PDI do) -- is shed exactly as before.
+    iso = match_control_pairs(all_clusters) if policy.isolate_binds else {}
+    analysis = []
+    for c in all_clusters:
+        if c.cls != CONTROL:
+            analysis.append(c)
+        elif c.start in iso and (c.ccp in _ISOLATE_INIT or c.ccp == 0x2069):
+            analysis.append(Cluster(c.s, HARD_BREAK, None, c.ccp, c.start,
+                                    RIGHT if c.ccp in _ISOLATE_INIT else LEFT))
+
+    # Section 7.3a: contextual straight-quote affinity, on the control-resolved
+    # stream so a quote's neighbours are real text (and, under §8.5, isolate
+    # walls) rather than stripped controls.
+    if policy.straight_quotes_contextual:
+        resolve_straight_quotes(analysis)
 
     # Section 6: coalesce into runs of uniform class. Each run keeps its member
     # clusters and their global indices into ``analysis``.
@@ -590,6 +803,21 @@ def extract_script_runs(text, policy=None):
         if cls == HARD_BREAK:
             return EDGE
         return cls
+
+    def wall_bind(run_pos, direction):
+        """True if the EDGE at ``run_pos`` is an isolate wall binding inward.
+
+        ``direction`` is RIGHT for a left neighbour (its closing cluster faces
+        us) and LEFT for a right neighbour (its opening cluster does). Real hard
+        breaks carry bind = None and so never bind (section 7.6 is unchanged).
+        """
+        if run_pos < 0 or run_pos >= len(runs):
+            return False                        # string edge, never an isolate
+        r = runs[run_pos]
+        if r[0] != HARD_BREAK:
+            return False
+        c = analysis[r[2] if direction == RIGHT else r[1]]
+        return c.bind == direction
 
     # owner[i] is the group id of analysis[i], or None if the cluster is dropped.
     owner = [None] * len(analysis)
@@ -628,12 +856,13 @@ def extract_script_runs(text, policy=None):
         elif L != TARGET and R != TARGET:                  # section 7.2 isolation
             pass
         elif R == TARGET:                                  # section 7.4 leading
-            m = split_leading(members, policy)
+            m = split_leading(members, policy, bind=wall_bind(k - 1, RIGHT))
             gr = right_gid(k)
             for i in range(hi - m + 1, hi + 1):
                 owner[i] = gr
         else:                                              # section 7.5 trailing
-            kcount = split_trailing(members, R, policy)
+            kcount = split_trailing(members, R, policy,
+                                    bind=wall_bind(k + 1, LEFT))
             gl = left_gid(k)
             for i in range(lo, lo + kcount):
                 owner[i] = gl
@@ -735,19 +964,51 @@ def _parse_max_bridge(token):
     return v
 
 
+def _columns(names, width, indent="  ", gap=2):
+    """Lay ``names`` out in as many equal columns as ``width`` allows."""
+    cell = max(len(n) for n in names) + gap
+    cols = max(1, (width - len(indent) + gap) // cell)
+    rows = -(-len(names) // cols)            # ceiling division
+    lines = []
+    for r in range(rows):
+        row = [names[c * rows + r] for c in range(cols) if c * rows + r < len(names)]
+        lines.append((indent + "".join(n.ljust(cell) for n in row)).rstrip())
+    return lines
+
+
+def _script_epilog():
+    """The --help listing of every script the active UCD accepts as a target."""
+    names = available_scripts()
+    try:
+        width = min(shutil.get_terminal_size(fallback=(80, 24)).columns, 100)
+    except Exception:                        # pragma: no cover - odd terminals
+        width = 80
+    head = ("available scripts (%d, from the Unicode data the 'regex' module "
+            "ships):" % len(names))
+    tail = ("Case, spaces and underscores are insignificant, and each script's "
+            "4-letter\nISO 15924 alias works too, so Old_Hungarian, "
+            "old hungarian and Hung are one\nand the same. Common, Inherited, "
+            "Unknown and Katakana_Or_Hiragana are not\nscripts and are rejected."
+            " Extracting several scripts means one run each.")
+    return "\n".join([head] + _columns(list(names), width) + ["", tail])
+
+
 def build_arg_parser():
     p = argparse.ArgumentParser(
         prog="script-runs",
         description="Extract embedded runs of one Unicode script from "
-                    "mixed-script text (spec v2.0).",
+                    "mixed-script text (spec v2.2).",
+        epilog=_script_epilog(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("file", nargs="?", metavar="FILE",
                    help="text file to read (UTF-8); omit to read from stdin")
     p.add_argument("-s", "--script", type=_parse_script, default=DEFAULT_SCRIPT,
                    metavar="SCRIPT",
-                   help="Unicode Script to extract, e.g. Greek, Cyrillic, Arabic, "
-                        "Hebrew (default: %s)" % DEFAULT_SCRIPT)
+                   help="Unicode Script to extract, e.g. Greek, Cyrillic, "
+                        "Arabic, Hebrew (default: %s); the full list of %d is "
+                        "at the end of this help"
+                        % (DEFAULT_SCRIPT, len(available_scripts())))
     p.add_argument("--encoding", default="utf-8",
                    help="input encoding (default: utf-8)")
     p.add_argument("--json", action="store_true",
@@ -774,6 +1035,15 @@ def build_arg_parser():
     g.add_argument("--bidi-controls", choices=("strip", "preserve_pairs"),
                    default="strip",
                    help="how to handle bidi formatting characters (default: strip)")
+    g.add_argument("--isolate-binds", dest="isolate_binds", action="store_true",
+                   help="treat a matched isolate (LRI/RLI/FSI...PDI) as a wall "
+                        "whose interior neutrals bind inward, so '<rtl> ⁦\"12 "
+                        "Main St.\"⁩ <rtl>' keeps the quotes and number")
+    g.add_argument("--straight-quotes", dest="straight_quotes_contextual",
+                   action="store_true",
+                   help='give a boundary straight quote (" or \') opener/closer '
+                        "affinity from its spacing, so a quoted phrase keeps its "
+                        "quotes at a run edge (spec 7.3a)")
     g.add_argument("--min-target-letters", "--min-latin-letters",
                    dest="min_target_letters", type=int, default=1, metavar="N",
                    help="minimum target-script letters for a run to be emitted "
@@ -800,6 +1070,8 @@ def policy_from_args(args):
         min_target_letters=args.min_target_letters,
         affinity_overrides=dict(args.affinity_override),
         cjk_punct_strong=args.cjk_punct_strong,
+        isolate_binds=args.isolate_binds,
+        straight_quotes_contextual=args.straight_quotes_contextual,
     )
 
 

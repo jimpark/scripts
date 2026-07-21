@@ -1,6 +1,6 @@
 {
-  "$schema_note": "Conformance fixture for 'Script Run Extraction from Mixed-Script Text', spec v2.0. This file is the machine-readable companion referenced in spec section 12 and is authoritative alongside the plain-text spec source, as ORIGINAL BYTES parsed once by a conforming JSON parser: copies that have passed through an additional encoding layer (embedded in other JSON, code blocks, logs) re-escape backslashes and are not authoritative. Inputs/expected are exact JSON strings; parse with a conforming JSON parser and compare code points, not glyphs. The 'cases' array reproduces the v1.4 fixture latin-run-extraction-tests.json unchanged and is the Latin backward-compatibility suite (spec section 12.1, run under target_script = Latin); 'generalization_cases' (spec section 12.2) carry an explicit per-case target_script.",
-  "spec_version": "2.0",
+  "$schema_note": "Conformance fixture for 'Script Run Extraction from Mixed-Script Text', spec v2.2. This file is the machine-readable companion referenced in spec section 12 and is authoritative alongside the plain-text spec source, as ORIGINAL BYTES parsed once by a conforming JSON parser: copies that have passed through an additional encoding layer (embedded in other JSON, code blocks, logs) re-escape backslashes and are not authoritative. Inputs/expected are exact JSON strings; parse with a conforming JSON parser and compare code points, not glyphs. The 'cases' array reproduces the v1.4 fixture latin-run-extraction-tests.json unchanged and is the Latin backward-compatibility suite (spec section 12.1, run under target_script = Latin); 'generalization_cases' (spec section 12.2) carry an explicit per-case target_script.",
+  "spec_version": "2.2",
   "supersedes_fixture": "latin-run-extraction-tests.json (spec_version 1.4)",
   "unicode_min_version": "16.0",
   "default_policy": {
@@ -22,7 +22,9 @@
     "input_codepoints, where present, is a redundancy check for cases containing invisible or easily-corrupted characters. In generalization_cases it also guards cross-script confusables: Greek Alpha U+0391, Cyrillic A U+0410, and Latin A U+0041 are visually identical in many fonts, and a copy-paste substitution silently changes a case's class structure. Verify code points, never glyphs.",
     "In default_policy, max_bridge: null represents the specification default of infinity, i.e. no bridge-length limit (spec sections 7.1 and 9). Harnesses must not treat null as zero, missing, or invalid.",
     "input_codepoints lists are the ground truth for escaping questions: verify a suspected escape (e.g. \\n vs \\\\n) against the parsed string's code points, never against a re-encoded display of this file.",
-    "Generalization case G5 corrects the worked example that circulated with the v2.0 design delta: with target_script = Arabic, the final word of 'עברית © 2026 العربية نهاية' is itself Arabic (TARGET), so the space before it sandwich-merges (spec 7.1) and the run is '© 2026 العربية نهاية' — not '© 2026 العربية'. G4 preserves the delta's intended demonstration (leading © anchor toward an RTL target) by making the trailing word Hebrew."
+    "Generalization case G5 corrects the worked example that circulated with the v2.0 design delta: with target_script = Arabic, the final word of 'עברית © 2026 العربية نهاية' is itself Arabic (TARGET), so the space before it sandwich-merges (spec 7.1) and the run is '© 2026 العربية نهاية' — not '© 2026 العربية'. G4 preserves the delta's intended demonstration (leading © anchor toward an RTL target) by making the trailing word Hebrew.",
+    "isolate_cases exercise the section 8.5 isolate_binds knob (default OFF, so the 29 'cases' and 11 'generalization_cases' are unaffected and remain bit-for-bit the v1.4 suite per spec section 2.1). Each case carries its own 'policy' object, merged over default_policy for that case only. The knob is scoped to MATCHED isolates: I6 and I7 pin that unmatched initiators and embeddings never bind.",
+    "straight_quote_cases exercise the section 7.3a straight_quotes_contextual knob (default OFF, so 'cases'/'generalization_cases'/'isolate_cases' are unaffected). The rule runs on the control-resolved stream, so a boundary \" or ' takes opener/closer affinity from its spacing. SQ4/SQ5/SQ6 are invariants pinning that the rule never disturbs sandwiched quotes (don't, 5'10\") or quote-wrapped other-script text. These inputs are acutely vulnerable to smart-quote substitution (\" -> curly Pi/Pf), which silently changes class structure; the input_codepoints lists make that corruption mechanically detectable."
   ],
   "cases": [
     {
@@ -816,6 +818,623 @@
         "U+0627",
         "U+064A",
         "U+0629"
+      ]
+    }
+  ],
+  "isolate_cases": [
+    {
+      "id": "I1",
+      "tier": "core",
+      "target_script": "Latin",
+      "policy": {
+        "isolate_binds": true
+      },
+      "input": "النص ⁦\"1234 Columbia Hts.\"⁩ النص",
+      "expected": [
+        "\"1234 Columbia Hts.\""
+      ],
+      "exercises": "isolate boundaries bind interior neutrals inward on BOTH sides: the leading run (quote + house number) commits with no RIGHT anchor, and the trailing '.\"' commits past the LEFT-anchor period; section 10.1 then keeps the period because the run-final cluster is a quote, not a terminal",
+      "policy_sensitivity": {
+        "isolate_binds": {
+          "off": [
+            "Columbia Hts"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+2066",
+        "U+0022",
+        "U+0031",
+        "U+0032",
+        "U+0033",
+        "U+0034",
+        "U+0020",
+        "U+0043",
+        "U+006F",
+        "U+006C",
+        "U+0075",
+        "U+006D",
+        "U+0062",
+        "U+0069",
+        "U+0061",
+        "U+0020",
+        "U+0048",
+        "U+0074",
+        "U+0073",
+        "U+002E",
+        "U+0022",
+        "U+2069",
+        "U+0020",
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "I2",
+      "tier": "core",
+      "target_script": "Latin",
+      "policy": {
+        "isolate_binds": true
+      },
+      "input": "النص ⁦2026 Windows⁩ النص",
+      "expected": [
+        "2026 Windows"
+      ],
+      "exercises": "leading bind supplies the anchor that section 7.4 otherwise requires: the isolate is per-instance evidence for exactly what numerals_bind_to_latin asserts corpus-wide",
+      "policy_sensitivity": {
+        "isolate_binds": {
+          "off": [
+            "Windows"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+2066",
+        "U+0032",
+        "U+0030",
+        "U+0032",
+        "U+0036",
+        "U+0020",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+2069",
+        "U+0020",
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "I3",
+      "tier": "core",
+      "target_script": "Latin",
+      "policy": {
+        "isolate_binds": true
+      },
+      "input": "النص ⁦Apple 5⁩개 النص",
+      "expected": [
+        "Apple 5"
+      ],
+      "exercises": "the PDI sits between the digit group and the counter, so R is EDGE rather than OTHER and the section 7.5 abutment exception cannot fire against text the isolate has already excluded from the span; contrast case 19",
+      "policy_sensitivity": {
+        "isolate_binds": {
+          "off": [
+            "Apple"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+2066",
+        "U+0041",
+        "U+0070",
+        "U+0070",
+        "U+006C",
+        "U+0065",
+        "U+0020",
+        "U+0035",
+        "U+2069",
+        "U+AC1C",
+        "U+0020",
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "I4",
+      "tier": "full",
+      "target_script": "Latin",
+      "policy": {
+        "isolate_binds": true
+      },
+      "input": "النص ⁨Windows Αθήνα⁩ النص",
+      "expected": [
+        "Windows"
+      ],
+      "exercises": "bind applies only at the isolate boundary itself: the space here faces Greek OTHER text inside the span, so ordinary section 7.5 resolution releases it. Multiple scripts inside one isolate still resolve normally",
+      "policy_sensitivity": {
+        "isolate_binds": {
+          "off": [
+            "Windows"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+2068",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+0020",
+        "U+0391",
+        "U+03B8",
+        "U+03AE",
+        "U+03BD",
+        "U+03B1",
+        "U+2069",
+        "U+0020",
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "I5",
+      "tier": "full",
+      "target_script": "Latin",
+      "policy": {
+        "isolate_binds": true,
+        "trailing_digits_bind": false
+      },
+      "input": "نص ⁨Windows 11⁩ نص",
+      "expected": [
+        "Windows 11"
+      ],
+      "exercises": "explicit isolate evidence OUTRANKS the corpus-wide trailing_digits_bind heuristic: the isolate places '11' inside the span, so it is captured even with the knob off. This is case 14 under both knobs, and it makes case 14's trailing_digits_bind variant inapplicable whenever isolate_binds is on",
+      "policy_sensitivity": {
+        "isolate_binds": {
+          "off": [
+            "Windows"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+2068",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+0020",
+        "U+0031",
+        "U+0031",
+        "U+2069",
+        "U+0020",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "I6",
+      "tier": "full",
+      "target_script": "Latin",
+      "policy": {
+        "isolate_binds": true
+      },
+      "input": "النص ⁦2026 Windows النص",
+      "expected": [
+        "Windows"
+      ],
+      "exercises": "an UNMATCHED isolate initiator never binds; it is shed as in case 15. Only a matched pair carries the containment guarantee section 8.5 relies on",
+      "policy_sensitivity": {
+        "isolate_binds": {
+          "off": [
+            "Windows"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+2066",
+        "U+0032",
+        "U+0030",
+        "U+0032",
+        "U+0036",
+        "U+0020",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+0020",
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "I7",
+      "tier": "full",
+      "target_script": "Latin",
+      "policy": {
+        "isolate_binds": true
+      },
+      "input": "النص ‪2026 Windows‬ النص",
+      "expected": [
+        "Windows"
+      ],
+      "exercises": "EMBEDDINGS (LRE/RLE/LRO/RLO...PDF) are excluded from section 8.5: unlike isolates they do not make their content opaque to surrounding neutrals in UAX #9, so they carry no containment guarantee and are shed as before",
+      "policy_sensitivity": {
+        "isolate_binds": {
+          "off": [
+            "Windows"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+202A",
+        "U+0032",
+        "U+0030",
+        "U+0032",
+        "U+0036",
+        "U+0020",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+202C",
+        "U+0020",
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635"
+      ]
+    }
+  ],
+  "straight_quote_cases": [
+    {
+      "id": "SQ1",
+      "tier": "core",
+      "target_script": "Latin",
+      "policy": {
+        "straight_quotes_contextual": true
+      },
+      "input": "نص \"1234 Columbia Hts.\" نص",
+      "expected": [
+        "\"1234 Columbia Hts.\""
+      ],
+      "policy_sensitivity": {
+        "straight_quotes_contextual": {
+          "off": [
+            "Columbia Hts"
+          ]
+        }
+      },
+      "exercises": "the headline case: an opening straight quote after space becomes RIGHT and anchors the leading house number; the closing quote after the period becomes LEFT and commits through it, and section 10.1 keeps the period because the run-final cluster is a quote, not a terminal",
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+0022",
+        "U+0031",
+        "U+0032",
+        "U+0033",
+        "U+0034",
+        "U+0020",
+        "U+0043",
+        "U+006F",
+        "U+006C",
+        "U+0075",
+        "U+006D",
+        "U+0062",
+        "U+0069",
+        "U+0061",
+        "U+0020",
+        "U+0048",
+        "U+0074",
+        "U+0073",
+        "U+002E",
+        "U+0022",
+        "U+0020",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "SQ2",
+      "tier": "core",
+      "target_script": "Latin",
+      "policy": {
+        "straight_quotes_contextual": true
+      },
+      "input": "نص talkin' نص",
+      "expected": [
+        "talkin'"
+      ],
+      "policy_sensitivity": {
+        "straight_quotes_contextual": {
+          "off": [
+            "talkin"
+          ]
+        }
+      },
+      "exercises": "trailing apostrophe as a closer: preceded by a letter, followed by space -> LEFT, absorbed as trailing glue. Off, it is default SEP and released",
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+0074",
+        "U+0061",
+        "U+006C",
+        "U+006B",
+        "U+0069",
+        "U+006E",
+        "U+0027",
+        "U+0020",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "SQ3",
+      "tier": "core",
+      "target_script": "Latin",
+      "policy": {
+        "straight_quotes_contextual": true
+      },
+      "input": "نص 'tis Windows نص",
+      "expected": [
+        "'tis Windows"
+      ],
+      "policy_sensitivity": {
+        "straight_quotes_contextual": {
+          "off": [
+            "tis Windows"
+          ]
+        }
+      },
+      "exercises": "leading apostrophe as an opener: preceded by space, followed by a letter -> RIGHT, anchors the run start. Off, it is SEP and dropped",
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+0027",
+        "U+0074",
+        "U+0069",
+        "U+0073",
+        "U+0020",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+0020",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "SQ4",
+      "tier": "core",
+      "target_script": "Latin",
+      "policy": {
+        "straight_quotes_contextual": true
+      },
+      "input": "نص don't stop نص",
+      "expected": [
+        "don't stop"
+      ],
+      "policy_sensitivity": {
+        "straight_quotes_contextual": {
+          "off": [
+            "don't stop"
+          ]
+        }
+      },
+      "exercises": "INVARIANT: the apostrophe is inside a TARGET-NEUTRAL-TARGET sandwich, which section 7.1 merges without consulting affinity at all, so the contextual rule can never see it. Identical on and off",
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+0064",
+        "U+006F",
+        "U+006E",
+        "U+0027",
+        "U+0074",
+        "U+0020",
+        "U+0073",
+        "U+0074",
+        "U+006F",
+        "U+0070",
+        "U+0020",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "SQ5",
+      "tier": "full",
+      "target_script": "Latin",
+      "policy": {
+        "straight_quotes_contextual": true
+      },
+      "input": "نص He is 5'10\" tall نص",
+      "expected": [
+        "He is 5'10\" tall"
+      ],
+      "policy_sensitivity": {
+        "straight_quotes_contextual": {
+          "off": [
+            "He is 5'10\" tall"
+          ]
+        }
+      },
+      "exercises": "INVARIANT: feet/inches marks sit inside the Latin span, sandwiched, so both the apostrophe and the double quote merge by section 7.1 regardless of the knob. Guards against the rule mis-firing on measurement notation",
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+0048",
+        "U+0065",
+        "U+0020",
+        "U+0069",
+        "U+0073",
+        "U+0020",
+        "U+0035",
+        "U+0027",
+        "U+0031",
+        "U+0030",
+        "U+0022",
+        "U+0020",
+        "U+0074",
+        "U+0061",
+        "U+006C",
+        "U+006C",
+        "U+0020",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "SQ6",
+      "tier": "full",
+      "target_script": "Latin",
+      "policy": {
+        "straight_quotes_contextual": true
+      },
+      "input": "نص \"안녕\" Windows نص",
+      "expected": [
+        "Windows"
+      ],
+      "policy_sensitivity": {
+        "straight_quotes_contextual": {
+          "off": [
+            "Windows"
+          ]
+        }
+      },
+      "exercises": "INVARIANT: a straight quote pair enclosing OTHER-script text must not create a Latin run. The opening quote precedes Hangul (not space) so it is not a closer, and faces OTHER so it is discarded (section 7.2); Windows is reached cleanly. Off, identical",
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+0022",
+        "U+C548",
+        "U+B155",
+        "U+0022",
+        "U+0020",
+        "U+0057",
+        "U+0069",
+        "U+006E",
+        "U+0064",
+        "U+006F",
+        "U+0077",
+        "U+0073",
+        "U+0020",
+        "U+0646",
+        "U+0635"
+      ]
+    },
+    {
+      "id": "SQ7",
+      "tier": "full",
+      "target_script": "Latin",
+      "policy": {
+        "straight_quotes_contextual": true
+      },
+      "input": "نص \"1234 Columbia Hts. نص",
+      "expected": [
+        "\"1234 Columbia Hts"
+      ],
+      "policy_sensitivity": {
+        "straight_quotes_contextual": {
+          "off": [
+            "Columbia Hts"
+          ]
+        }
+      },
+      "exercises": "UNBALANCED input: with no closing quote, the opener still binds and the run keeps a dangling opening quote. This is the accepted trade-off (a lost house number is worse than an unpaired quote); contrast section 8.2, which sheds unpaired *controls*. The section 10.1 period strip removes the trailing '.'",
+      "input_codepoints": [
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+0022",
+        "U+0031",
+        "U+0032",
+        "U+0033",
+        "U+0034",
+        "U+0020",
+        "U+0043",
+        "U+006F",
+        "U+006C",
+        "U+0075",
+        "U+006D",
+        "U+0062",
+        "U+0069",
+        "U+0061",
+        "U+0020",
+        "U+0048",
+        "U+0074",
+        "U+0073",
+        "U+002E",
+        "U+0020",
+        "U+0646",
+        "U+0635"
       ]
     }
   ]

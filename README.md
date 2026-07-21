@@ -1253,7 +1253,7 @@ target-script entity (`Windows 11 (23H2)`, `© 2026 Example Corp`, `macOS™`,
 embedded phrase, in which case it belongs to neither. This tool folds neutral
 glue **in** when it belongs (internally, trailing, or leading) and leaves it
 **out** when it bridges or dangles, in all positions. It is a conforming
-implementation of *"Script Run Extraction from Mixed-Script Text"*, spec v2.0
+implementation of *"Script Run Extraction from Mixed-Script Text"*, spec v2.2
 (in [`docs/`](docs/script-run-extraction-spec.md)), which adapts the
 neutral-resolution phase of the Unicode Bidirectional Algorithm (UAX #9): every
 strong script is treated alike and all work happens in **logical order**, so the
@@ -1279,7 +1279,12 @@ uv run script-runs.py [FILE] [--script SCRIPT] [policy options]
 - Pass `FILE` to read a UTF-8 text file, or **omit it to read from stdin**.
 - `--script` (`-s`) takes any Unicode `Script` name or 4-letter alias —
   `Greek`, `Cyrillic`, `Arabic`, `Hebrew`, `Devanagari`, `Cyrl`, … — and
-  **defaults to `Latin`**. An unknown value is a usage error listing examples.
+  **defaults to `Latin`**. Case, spaces and underscores are insignificant, so
+  `Old_Hungarian`, `old hungarian` and `Hung` are the same script.
+- **`script-runs --help` ends with every script you can target**, in columns —
+  the list is read out of the Unicode data the `regex` module ships, so it is
+  what *your* install actually accepts, not a list baked into the tool. An
+  unknown value is a usage error pointing at that list.
 - Each extracted run prints as `start  end  text` (offsets in **code points**);
   `--json` emits one JSON object per run instead.
 - Run `script-runs --help` for the full reference.
@@ -1324,12 +1329,14 @@ Every knob from spec §9 is exposed as a flag; the engine takes the defaults
 
 | Option | Effect |
 | ------ | ------ |
-| `-s`, `--script <SCRIPT>` | The Unicode `Script` to extract (default: `Latin`). |
+| `-s`, `--script <SCRIPT>` | The Unicode `Script` to extract (default: `Latin`); `--help` lists them all. |
 | `--no-strip-terminal-punct` | Keep a trailing `. , ; : ! ?` that was captured as glue (default: strip it — it usually punctuates the *host* sentence). |
 | `--numerals-bind` | Let a **leading** digit group bind to adjacent target-script text without a `©`-style anchor (captures a bare `2026 Windows`). Spelled `--numerals-bind-to-latin` in the spec; both are accepted. |
 | `--no-trailing-digits-bind` | Make **trailing** digit groups purely provisional, so `Windows 11` → `Windows` (symmetric with leading behaviour). |
 | `--max-bridge <N>` | Refuse the sandwich merge when the neutral run between two target-script runs is longer than `N` grapheme clusters (default: `inf`, no limit). |
 | `--bidi-controls {strip,preserve_pairs}` | How to treat bidi formatting characters (default: `strip` them before analysis). |
+| `--isolate-binds` | Treat a **matched** isolate (`LRI`/`RLI`/`FSI` … `PDI`) as a wall whose interior neutrals bind inward, so glue the isolate encloses is never released to the outside text. Off by default; see below. |
+| `--straight-quotes` | Give a boundary straight quote (`"` or `'`) opener/closer affinity from its spacing, so a quoted phrase keeps its quotes at a run edge. Off by default; see below. |
 | `--min-target-letters <N>` | Minimum target-script letters for a run to be emitted (default: `1`). `--min-latin-letters` is accepted as an alias. |
 | `--affinity-override CP=AFFINITY` | Move a character's binding affinity, e.g. `U+00AE=RIGHT` to make `®` a prefix anchor. Repeatable. `AFFINITY` ∈ `RIGHT,LEFT,SEP,DIGIT,STOP`. |
 | `--no-cjk-punct-strong` | Do **not** strengthen CJK punctuation / full-width forms to strong (they become neutral glue, so `Alpha。Beta` merges into one run). Set this when the **target** is itself a CJK script. |
@@ -1357,6 +1364,44 @@ echo '한국어 ®Brand 텍스트' | script-runs --affinity-override U+00AE=RIGH
   whole pair falls within that one run; a pair that would straddle a run boundary
   is excluded entirely (spec §8.2). For matching, indexing, and translation
   memory, the default `strip` is the right choice.
+- **`--isolate-binds` uses matched isolates as structural evidence.** A matched
+  `LRI…PDI` pair is an explicit assertion that its contents form one directional
+  span, and under UAX #9 that content is opaque to the text around it — so a
+  neutral inside the isolate *cannot* belong outside it. With the flag on, those
+  boundaries survive as walls that commit their interior glue inward, which is
+  the anchor the boundary scans otherwise lack:
+
+  | Input (Arabic host) | default | `--isolate-binds` |
+  | --- | --- | --- |
+  | `⁦"1234 Columbia Hts."⁩` | `Columbia Hts` | `"1234 Columbia Hts."` |
+  | `⁦2026 Windows⁩` | `Windows` | `2026 Windows` |
+  | `⁦Apple 5⁩개` | `Apple` | `Apple 5` |
+
+  It is scoped to **matched isolates only**: unmatched controls and *embeddings*
+  (`LRE`/`RLE`…`PDF`, which do not isolate their content) never bind. A binding
+  boundary also outranks `--no-trailing-digits-bind`, on the principle that
+  explicit per-instance evidence beats a corpus-wide heuristic (spec §8.5).
+  It is **off by default** — converters that wrap every RTL/LTR transition
+  indiscriminately will produce wider captures, so validate on your own corpus.
+- **`--straight-quotes` gives straight quotes a role from their spacing.** The
+  ASCII quotes `"` and `'` are the only quotation marks that can't be classified
+  by code point — the same character opens and closes — so by default they are
+  inert separators and a quoted phrase loses its quotes at a run edge. With the
+  flag on, a quote after a space (and before non-space) reads as an *opener* and
+  a quote after non-space (and before a space) as a *closer*, exactly as
+  typographic "smart quote" tools decide:
+
+  | Input (Arabic host) | default | `--straight-quotes` |
+  | --- | --- | --- |
+  | `"1234 Columbia Hts."` | `Columbia Hts` | `"1234 Columbia Hts."` |
+  | `talkin'` | `talkin` | `talkin'` |
+  | `'tis Windows` | `tis Windows` | `'tis Windows` |
+
+  Contractions and measurements (`don't`, `5'10"`) are **never** affected: they
+  sit between two Latin letters, where the sandwich rule merges the whole run
+  without ever looking at quote affinity. An unbalanced quote is kept, not
+  dropped (a lost house number is the worse error). It composes with
+  `--isolate-binds`, and like it is **off by default** (spec §7.3a).
 - **Script-bound digits belong to their own script.** Arabic-Indic digits
   (`٢٠٢٦`) are strong, never absorbable glue, unless Arabic *is* the target;
   ASCII digits are always neutral. No digit is ever promoted to the target class
@@ -1365,6 +1410,10 @@ echo '한국어 ®Brand 텍스트' | script-runs --affinity-override U+00AE=RIGH
   ASCII digits (`Windows 11` → `Windows 11`), `Windows １１` yields `Windows`:
   a full-width character signals CJK context and is treated as host text
   (spec §5.2e, §7.3), the same reasoning that makes Arabic-Indic digits strong.
+- **`Common`, `Inherited`, `Unknown` and `Katakana_Or_Hiragana` are rejected**
+  as targets. They are the ISO 15924 *special* codes, not scripts: the first two
+  are the neutrals this tool resolves rather than extracts, and no character has
+  `Script=Hrkt`, so targeting it could only ever match nothing.
 - **Unicode data comes from two sources**, reported by `script-runs
   --unicode-version`: the third-party `regex` module supplies UAX #29 grapheme
   segmentation and the `Script` / `Script_Extensions` / `Extended_Pictographic`
@@ -1372,7 +1421,8 @@ echo '한국어 ®Brand 텍스트' | script-runs --affinity-override U+00AE=RIGH
   supplies general categories. The spec's minimum reference is Unicode 16.0;
   documented differences from a later UCD version are not conformance failures.
 - Conformance is checked by `tests/test_script_runs.py`, which drives all 29
-  Latin cases and all 11 generalization cases (Greek, Cyrillic, Arabic, Hebrew)
+  Latin cases, all 11 generalization cases (Greek, Cyrillic, Arabic, Hebrew),
+  the 7 isolate-binding cases and the 7 straight-quote cases
   of the machine-readable fixture (`docs/script-run-extraction-tests.json`) plus
   its per-knob sensitivity variants.
 
