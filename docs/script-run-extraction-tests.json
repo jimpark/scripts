@@ -1,24 +1,28 @@
 {
-  "$schema_note": "Conformance fixture for 'Latin Run Extraction from Mixed-Script Text', spec v1.4. This file is the machine-readable companion referenced in spec section 12 and is authoritative alongside the plain-text spec source, as ORIGINAL BYTES parsed once by a conforming JSON parser: copies that have passed through an additional encoding layer (embedded in other JSON, code blocks, logs) re-escape backslashes and are not authoritative. Inputs/expected are exact JSON strings; parse with a conforming JSON parser and compare code points, not glyphs.",
-  "spec_version": "1.4",
+  "$schema_note": "Conformance fixture for 'Script Run Extraction from Mixed-Script Text', spec v2.0. This file is the machine-readable companion referenced in spec section 12 and is authoritative alongside the plain-text spec source, as ORIGINAL BYTES parsed once by a conforming JSON parser: copies that have passed through an additional encoding layer (embedded in other JSON, code blocks, logs) re-escape backslashes and are not authoritative. Inputs/expected are exact JSON strings; parse with a conforming JSON parser and compare code points, not glyphs. The 'cases' array reproduces the v1.4 fixture latin-run-extraction-tests.json unchanged and is the Latin backward-compatibility suite (spec section 12.1, run under target_script = Latin); 'generalization_cases' (spec section 12.2) carry an explicit per-case target_script.",
+  "spec_version": "2.0",
+  "supersedes_fixture": "latin-run-extraction-tests.json (spec_version 1.4)",
   "unicode_min_version": "16.0",
   "default_policy": {
+    "target_script": "Latin",
     "strip_terminal_punct": true,
     "numerals_bind_to_latin": false,
     "trailing_digits_bind": true,
     "max_bridge": null,
     "bidi_controls": "strip",
-    "min_latin_letters": 1,
     "affinity_overrides": {},
-    "cjk_punct_strong": true
+    "cjk_punct_strong": true,
+    "min_target_letters": 1
   },
   "policy_sensitivity_is_exhaustive": false,
   "notes": [
-    "All expected outputs assume default_policy unless a policy_sensitivity entry states otherwise.",
-    "policy_sensitivity maps knob -> non-default setting -> expected runs under that setting. These entries are SELECTED normative variants, NOT an exhaustive sensitivity map: the absence of an entry for a knob does NOT imply the case is unaffected by that knob (see policy_sensitivity_is_exhaustive and spec section 12). Broad knobs such as min_latin_letters, max_bridge, and affinity_overrides inherently affect many cases.",
-    "input_codepoints, where present, is a redundancy check for cases containing invisible or easily-corrupted characters.",
+    "All expected outputs assume default_policy unless a policy_sensitivity entry states otherwise. Cases in 'cases' run under target_script = Latin; cases in 'generalization_cases' each carry an explicit target_script that overrides default_policy for that case only.",
+    "min_target_letters is the v2.0 name of v1.4's min_latin_letters (spec section 9). Implementations MAY accept min_latin_letters as an alias when target_script = Latin and MUST document if they do. A default_policy lacking a target_script key (as in the v1.4 fixture) means Latin.",
+    "policy_sensitivity maps knob -> non-default setting -> expected runs under that setting. These entries are SELECTED normative variants, NOT an exhaustive sensitivity map: the absence of an entry for a knob does NOT imply the case is unaffected by that knob (see policy_sensitivity_is_exhaustive and spec section 12). Broad knobs such as min_target_letters, max_bridge, and affinity_overrides inherently affect many cases.",
+    "input_codepoints, where present, is a redundancy check for cases containing invisible or easily-corrupted characters. In generalization_cases it also guards cross-script confusables: Greek Alpha U+0391, Cyrillic A U+0410, and Latin A U+0041 are visually identical in many fonts, and a copy-paste substitution silently changes a case's class structure. Verify code points, never glyphs.",
     "In default_policy, max_bridge: null represents the specification default of infinity, i.e. no bridge-length limit (spec sections 7.1 and 9). Harnesses must not treat null as zero, missing, or invalid.",
-    "input_codepoints lists are the ground truth for escaping questions: verify a suspected escape (e.g. \\n vs \\\\n) against the parsed string's code points, never against a re-encoded display of this file."
+    "input_codepoints lists are the ground truth for escaping questions: verify a suspected escape (e.g. \\n vs \\\\n) against the parsed string's code points, never against a re-encoded display of this file.",
+    "Generalization case G5 corrects the worked example that circulated with the v2.0 design delta: with target_script = Arabic, the final word of 'עברית © 2026 العربية نهاية' is itself Arabic (TARGET), so the space before it sandwich-merges (spec 7.1) and the run is '© 2026 العربية نهاية' — not '© 2026 العربية'. G4 preserves the delta's intended demonstration (leading © anchor toward an RTL target) by making the trailing word Hebrew."
   ],
   "cases": [
     {
@@ -538,6 +542,280 @@
         "U+D14D",
         "U+C2A4",
         "U+D2B8"
+      ]
+    }
+  ],
+  "generalization_cases": [
+    {
+      "id": "G1",
+      "tier": "core",
+      "target_script": "Greek",
+      "input": "한국어 Αθήνα 2026 텍스트",
+      "expected": [
+        "Αθήνα 2026"
+      ],
+      "exercises": "trailing digit-group self-commit with a non-Latin target (mirror of Latin cases 1/18); Greek letters are U+0391 U+03B8 U+03AE U+03BD U+03B1 - verify against confusable Latin",
+      "policy_sensitivity": {
+        "trailing_digits_bind": {
+          "off": [
+            "Αθήνα"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+D55C",
+        "U+AD6D",
+        "U+C5B4",
+        "U+0020",
+        "U+0391",
+        "U+03B8",
+        "U+03AE",
+        "U+03BD",
+        "U+03B1",
+        "U+0020",
+        "U+0032",
+        "U+0030",
+        "U+0032",
+        "U+0036",
+        "U+0020",
+        "U+D14D",
+        "U+C2A4",
+        "U+D2B8"
+      ]
+    },
+    {
+      "id": "G2",
+      "tier": "core",
+      "target_script": "Greek",
+      "input": "Αθήνα",
+      "expected": [
+        "Αθήνα"
+      ],
+      "exercises": "base rule: Script = Greek -> TARGET; whole-string run; validation passes with min_target_letters = 1",
+      "input_codepoints": [
+        "U+0391",
+        "U+03B8",
+        "U+03AE",
+        "U+03BD",
+        "U+03B1"
+      ]
+    },
+    {
+      "id": "G3",
+      "tier": "core",
+      "target_script": "Greek",
+      "input": "Москва Athens 텍스트",
+      "expected": [],
+      "exercises": "Cyrillic, Latin, and Hangul letters are all OTHER under a Greek target; no target-script host anywhere -> no runs; Cyrillic 'Москва' is U+041C U+043E U+0441 U+043A U+0432 U+0430, not Latin lookalikes",
+      "input_codepoints": [
+        "U+041C",
+        "U+043E",
+        "U+0441",
+        "U+043A",
+        "U+0432",
+        "U+0430",
+        "U+0020",
+        "U+0041",
+        "U+0074",
+        "U+0068",
+        "U+0065",
+        "U+006E",
+        "U+0073",
+        "U+0020",
+        "U+D14D",
+        "U+C2A4",
+        "U+D2B8"
+      ]
+    },
+    {
+      "id": "G4",
+      "tier": "core",
+      "target_script": "Arabic",
+      "input": "עברית © 2026 العربية סוף",
+      "expected": [
+        "© 2026 العربية"
+      ],
+      "exercises": "leading © RIGHT anchor commits provisionals toward an RTL target; anchor rules are script-independent (mirror of Latin case 13 with host and target roles swapped: Hebrew host, Arabic target); trailing boundary breaks before the following Hebrew word",
+      "input_codepoints": [
+        "U+05E2",
+        "U+05D1",
+        "U+05E8",
+        "U+05D9",
+        "U+05EA",
+        "U+0020",
+        "U+00A9",
+        "U+0020",
+        "U+0032",
+        "U+0030",
+        "U+0032",
+        "U+0036",
+        "U+0020",
+        "U+0627",
+        "U+0644",
+        "U+0639",
+        "U+0631",
+        "U+0628",
+        "U+064A",
+        "U+0629",
+        "U+0020",
+        "U+05E1",
+        "U+05D5",
+        "U+05E3"
+      ]
+    },
+    {
+      "id": "G5",
+      "tier": "core",
+      "target_script": "Arabic",
+      "input": "עברית © 2026 العربية نهاية",
+      "expected": [
+        "© 2026 العربية نهاية"
+      ],
+      "exercises": "sandwich rule with an RTL target: the space between the two Arabic words is TARGET-NEUTRAL-TARGET and merges (spec 7.1). CORRECTION of the v2.0 design-delta example, which gave '© 2026 العربية' for this input by overlooking that نهاية is Arabic; see fixture notes",
+      "input_codepoints": [
+        "U+05E2",
+        "U+05D1",
+        "U+05E8",
+        "U+05D9",
+        "U+05EA",
+        "U+0020",
+        "U+00A9",
+        "U+0020",
+        "U+0032",
+        "U+0030",
+        "U+0032",
+        "U+0036",
+        "U+0020",
+        "U+0627",
+        "U+0644",
+        "U+0639",
+        "U+0631",
+        "U+0628",
+        "U+064A",
+        "U+0629",
+        "U+0020",
+        "U+0646",
+        "U+0647",
+        "U+0627",
+        "U+064A",
+        "U+0629"
+      ]
+    },
+    {
+      "id": "G6",
+      "tier": "core",
+      "target_script": "Latin",
+      "input": "한국어 Windows 11 텍스트",
+      "expected": [
+        "Windows 11"
+      ],
+      "exercises": "v1.4 equivalence spot check (spec 2.1): explicit target_script = Latin reproduces the Latin-suite behavior; structural duplicate of case 1 without parens"
+    },
+    {
+      "id": "G7",
+      "tier": "full",
+      "target_script": "Greek",
+      "input": "عام ٢٠٢٦ Αθήνα",
+      "expected": [
+        "Αθήνα"
+      ],
+      "exercises": "spec 5.2(d) generalization: Arabic-Indic digits U+0662 U+0660 U+0662 U+0666 are strong OTHER under a Greek target, never provisional glue (mirror of Latin case 11)",
+      "input_codepoints": [
+        "U+0639",
+        "U+0627",
+        "U+0645",
+        "U+0020",
+        "U+0662",
+        "U+0660",
+        "U+0662",
+        "U+0666",
+        "U+0020",
+        "U+0391",
+        "U+03B8",
+        "U+03AE",
+        "U+03BD",
+        "U+03B1"
+      ]
+    },
+    {
+      "id": "G8",
+      "tier": "full",
+      "target_script": "Greek",
+      "input": "© 2026 텍스트",
+      "expected": [],
+      "exercises": "spec 10.2 validation: the leading scan finds no TARGET neighbor (no Greek anywhere), the neutral run is OTHER/EDGE-flanked and discarded; nothing survives to validate"
+    },
+    {
+      "id": "G9",
+      "tier": "full",
+      "target_script": "Greek",
+      "input": "한국어 123 ABC 텍스트",
+      "expected": [],
+      "exercises": "spec 10.2 validation: Latin letters do not satisfy a Greek min_target_letters threshold; 'ABC' is OTHER under a Greek target, so no run is ever formed"
+    },
+    {
+      "id": "G10",
+      "tier": "core",
+      "target_script": "Cyrillic",
+      "input": "한국어 Москва 11 텍스트",
+      "expected": [
+        "Москва 11"
+      ],
+      "exercises": "Cyrillic target: trailing digit-group self-commit (mirror of G1/case 18); 'Москва' code points are Cyrillic, not Latin confusables",
+      "policy_sensitivity": {
+        "trailing_digits_bind": {
+          "off": [
+            "Москва"
+          ]
+        }
+      },
+      "input_codepoints": [
+        "U+D55C",
+        "U+AD6D",
+        "U+C5B4",
+        "U+0020",
+        "U+041C",
+        "U+043E",
+        "U+0441",
+        "U+043A",
+        "U+0432",
+        "U+0430",
+        "U+0020",
+        "U+0031",
+        "U+0031",
+        "U+0020",
+        "U+D14D",
+        "U+C2A4",
+        "U+D2B8"
+      ]
+    },
+    {
+      "id": "G11",
+      "tier": "core",
+      "target_script": "Hebrew",
+      "input": "النص עברית™ نهاية",
+      "expected": [
+        "עברית™"
+      ],
+      "exercises": "Hebrew target inside an Arabic host: trailing ™ LEFT anchor absorbed (mirror of Latin case 3); RTL-target/RTL-host processing is still purely logical-order",
+      "input_codepoints": [
+        "U+0627",
+        "U+0644",
+        "U+0646",
+        "U+0635",
+        "U+0020",
+        "U+05E2",
+        "U+05D1",
+        "U+05E8",
+        "U+05D9",
+        "U+05EA",
+        "U+2122",
+        "U+0020",
+        "U+0646",
+        "U+0647",
+        "U+0627",
+        "U+064A",
+        "U+0629"
       ]
     }
   ]

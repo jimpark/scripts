@@ -13,9 +13,10 @@ python tests/test_glob.py
 ```
 
 They use only the standard library (no pytest required) and print an `OK` line
-on success, or raise `AssertionError` on failure. One exception: `test_latin_runs`
-needs the `regex` module that `latin-runs` itself depends on, so run it with
-`uv run tests/test_latin_runs.py` (the inline dependency is installed for you).
+on success, or raise `AssertionError` on failure. One exception:
+`test_script_runs` needs the `regex` module that `script-runs` itself depends
+on, so run it with `uv run tests/test_script_runs.py` (the inline dependency is
+installed for you).
 
 ## Tests
 
@@ -30,9 +31,13 @@ needs the `regex` module that `latin-runs` itself depends on, so run it with
   and literally when it's neither and won't compile. Checks the paths each
   selects — including a glob's anchoring at both ends — and that every
   half-typed query still compiles.
-- **test_latin_runs.py** — Conformance suite for `latin-runs` against the v1.4
-  companion fixture (`docs/latin-run-extraction-tests.json`). Runs every case
+- **test_script_runs.py** — Conformance suite for `script-runs` against the v2.0
+  companion fixture (`docs/script-run-extraction-tests.json`): all 29 Latin
+  backward-compatibility cases plus the 11 generalization cases, each under its
+  own target script (Greek, Cyrillic, Arabic, Hebrew, Latin). Runs every case
   under the default policy and each declared policy-sensitivity variant under its
   non-default knob, comparing extracted run substrings exactly (code points, not
-  glyphs). Also verifies each case's `input_codepoints` redundancy list and that
-  every emitted `(start, end)` offset slices back to its run.
+  glyphs). Also verifies each case's `input_codepoints` redundancy list — which
+  catches a re-escaped fixture or a cross-script confusable (Greek `Α` U+0391 vs
+  Latin `A` U+0041) substituted by copy-paste — that every emitted `(start, end)`
+  offset slices back to its run, and that an invalid `--script` is rejected.

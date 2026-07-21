@@ -4,36 +4,51 @@
 # dependencies = ["regex"]
 # ///
 """
-latin-runs.py — Extract embedded Latin-script runs from mixed-script Unicode text.
+script-runs.py — Extract embedded runs of one Unicode script from mixed-script text.
 
-Given a string whose primary content is one or more non-Latin scripts (Korean,
-Arabic, Hebrew, ...), this finds every maximal contiguous run of embedded
-Latin-script text — English phrases, product names, URLs, version strings,
-copyright notices — together with the language-neutral "glue" (digits, spaces,
-punctuation, symbols) that logically belongs to each run.
+Given a string whose primary content is written in one or more scripts, this
+finds every maximal contiguous run of text belonging to a single configured
+*target script* — English phrases, product names, URLs, version strings and
+copyright notices when the target is Latin; embedded Greek, Cyrillic, Arabic or
+Hebrew phrases when those are the target — together with the language-neutral
+"glue" (digits, spaces, punctuation, symbols) that logically belongs to each run.
 
-This is a conforming implementation of "Latin Run Extraction from Mixed-Script
-Text", specification v1.4 (see docs/latin-run-extraction-spec-v1.4.md). The hard
-part is deciding which script-neutral characters (Unicode Script=Common or
-Inherited) fold into a Latin run and which act as a bridge to the surrounding
-non-Latin text or dangle without a host. The spec adapts the neutral-resolution
-skeleton of the Unicode Bidirectional Algorithm (UAX #9, rules N1-N2); this file
-follows the normative pseudocode of the spec's section 11.2 phase for phase:
+This is a conforming implementation of "Script Run Extraction from Mixed-Script
+Text", specification v2.0 (see docs/script-run-extraction-spec.md). The hard part
+is deciding which script-neutral characters (Unicode Script=Common or Inherited)
+fold into a target-script run and which act as a bridge to the surrounding text
+or dangle without a host. The spec adapts the neutral-resolution skeleton of the
+Unicode Bidirectional Algorithm (UAX #9, rules N1-N2); this file follows the
+normative pseudocode of the spec's section 11.2 phase for phase:
 
-    1. Classify each grapheme cluster (LATIN / BASE / NEUTRAL / CONTROL /
+    1. Classify each grapheme cluster (TARGET / OTHER / NEUTRAL / CONTROL /
        HARD_BREAK) from its "classification code point" (spec section 4.1, 5).
     2. Coalesce adjacent equal-class clusters into runs (section 6).
     3. Resolve bidi-control clusters (section 8; default: strip + re-coalesce).
     4. Resolve each NEUTRAL run against its strong neighbours: merge when
-       sandwiched between Latin (section 7.1), discard when isolated (7.2), or
-       split directionally at mixed boundaries using per-cluster binding
-       affinity (7.3-7.5).
+       sandwiched between target-script text (section 7.1), discard when isolated
+       (7.2), or split directionally at mixed boundaries using per-cluster
+       binding affinity (7.3-7.5).
     5. Trim edge whitespace and terminal punctuation, validate, and emit each
-       Latin run with its (start, end) offsets (section 10).
+       target-script run with its (start, end) offsets (section 10).
 
 All processing is in logical (storage) order, which is what makes the algorithm
-indifferent to RTL display: Arabic and Hebrew are strong scripts like any other,
-and display-time reordering never enters the computation.
+indifferent to RTL display: Arabic and Hebrew are strong scripts like any other —
+whether as target or as host — and display-time reordering never enters the
+computation.
+
+CONFORMANCE NOTES (spec section 2)
+----------------------------------
+- Configured with target_script = Latin this is behaviourally identical to a
+  v1.4 "Latin Run Extraction" implementation (spec section 2.1); the v1.4
+  conformance suite is the fixture's ``cases`` array.
+- Documented deviation: spec section 9 makes ``target_script`` a required knob
+  with no default. This tool defaults ``--script`` to ``Latin`` for command-line
+  ergonomics (the v1.4-equivalent configuration). The library ``Policy`` default
+  is likewise ``Latin``.
+- Documented alias: ``min_latin_letters`` is accepted as an alias for
+  ``min_target_letters``, and ``numerals_bind_to_target`` as an alias for the
+  spec's retained name ``numerals_bind_to_latin`` (both permitted by section 9).
 
 UNICODE DATA
 ------------
@@ -42,12 +57,13 @@ grapheme segmentation come from the third-party ``regex`` module (its own bundle
 UCD); general categories come from the standard-library ``unicodedata``. The
 active versions are printed by ``--unicode-version``. The spec's minimum
 reference is Unicode 16.0; character-level differences from a documented later
-UCD version are not conformance failures (spec section 2).
+UCD version are not conformance failures (spec section 2.2).
 
 Usage:
-    latin-runs [FILE] [policy options]
-    latin-runs --json report.txt
-    echo '한국어 Windows 11 (23H2)' | latin-runs
+    script-runs [FILE] [--script SCRIPT] [policy options]
+    script-runs --script Greek --json report.txt
+    echo '한국어 Windows 11 (23H2)' | script-runs
+    echo '한국어 Αθήνα 2026 텍스트' | script-runs --script Greek
 """
 
 import argparse
@@ -60,7 +76,7 @@ try:
     import regex
 except ImportError:  # pragma: no cover - surfaced to the user with guidance
     sys.stderr.write(
-        "latin-runs: the 'regex' module is required (Script/grapheme data).\n"
+        "script-runs: the 'regex' module is required (Script/grapheme data).\n"
         "Run via the provided wrapper (uv installs it), or: pip install regex\n"
     )
     sys.exit(1)
@@ -70,12 +86,14 @@ __version__ = "1.0"
 # ---------------------------------------------------------------------------
 # Cluster classes (spec section 5) and binding affinities (section 7.3)
 # ---------------------------------------------------------------------------
-LATIN, BASE, NEUTRAL, CONTROL, HARD_BREAK = (
-    "LATIN", "BASE", "NEUTRAL", "CONTROL", "HARD_BREAK")
+TARGET, OTHER, NEUTRAL, CONTROL, HARD_BREAK = (
+    "TARGET", "OTHER", "NEUTRAL", "CONTROL", "HARD_BREAK")
 RIGHT, LEFT, SEP, DIGIT, STOP = "RIGHT", "LEFT", "SEP", "DIGIT", "STOP"
 # EDGE is not a class; it is the effective neighbour at a string boundary or an
 # adjacent HARD_BREAK (spec section 7).
 EDGE = "EDGE"
+
+DEFAULT_SCRIPT = "Latin"
 
 # Bidi formatting characters (spec section 5.4). Handled by section 8, never as
 # ordinary neutral glue.
@@ -97,7 +115,8 @@ TERMINALS = frozenset(".,;:!?")
 
 # Explicit affinity code points (spec section 7.3 step 2), tested against the
 # classification code point. General-category rules (step 4) cover the rest of
-# openers/closers/currency/whitespace/digits.
+# openers/closers/currency/whitespace/digits. Affinity is a property of the
+# neutral cluster alone and is independent of the configured target script.
 EXPLICIT_RIGHT = frozenset({
     0x00A9,  # ©
     0x0023,  # #
@@ -118,12 +137,16 @@ EXPLICIT_LEFT = frozenset({
 
 
 def _cjk_strong_set():
-    """Code points strengthened to BASE when cjk_punct_strong is on (section 5.2e).
+    """Code points strengthened to OTHER when cjk_punct_strong is on (section 5.2e).
 
     The listed CJK punctuation plus the full-width forms block U+FF01-U+FF60 as a
     whole (full-width digits, currency and symbols included, by the same
     host-affiliation logic as Arabic-Indic digits), excluding the full-width
-    Latin letters, which are Script=Latin and classify LATIN regardless.
+    Latin letters, which are Script=Latin and classify by the base rule of
+    section 5.1 regardless (TARGET when the target script is Latin, else OTHER).
+
+    Note that this strengthening can only ever produce OTHER, never TARGET
+    (section 5.2d, 5.2e): it is applied to Common/Inherited clusters only.
     """
     s = {0x3001, 0x3002, 0xFF0C, 0xFF0E}
     s.update(range(0x300C, 0x3010))  # corner brackets 「」『』
@@ -138,26 +161,84 @@ CJK_STRONG = _cjk_strong_set()
 
 
 # ---------------------------------------------------------------------------
+# The target script (spec section 2.2, 5.1)
+# ---------------------------------------------------------------------------
+class ScriptError(ValueError):
+    """The configured target_script is not a usable Unicode Script value."""
+
+
+# Suggested in error messages only; any Script name or 4-letter alias the active
+# UCD knows is accepted.
+_SCRIPT_EXAMPLES = ("Latin", "Greek", "Cyrillic", "Arabic", "Hebrew", "Armenian",
+                    "Georgian", "Devanagari", "Thai", "Hangul", "Han")
+
+# Script values that name "no script"; a target must identify a real script,
+# since Common/Inherited characters are the neutrals this algorithm resolves.
+_NON_SCRIPTS = frozenset({"common", "zyyy", "inherited", "qaai", "zinh",
+                          "unknown", "zzzz"})
+
+_RE_SCRIPT_NAME = regex.compile(r"\A[A-Za-z][A-Za-z_ ]*\Z")
+
+
+@lru_cache(maxsize=None)
+def script_matcher(script):
+    """Compile \\p{Script=...} for ``script``, raising ScriptError if invalid.
+
+    The name is validated before interpolation so a value like ``Latin}`` cannot
+    smuggle syntax into the pattern.
+    """
+    name = script.strip()
+    if not _RE_SCRIPT_NAME.match(name):
+        raise ScriptError(
+            "%r is not a Unicode Script name (letters, spaces and underscores "
+            "only; e.g. %s)" % (script, ", ".join(_SCRIPT_EXAMPLES)))
+    if name.replace(" ", "_").lower() in _NON_SCRIPTS:
+        raise ScriptError(
+            "%r names no script; target_script must be a real script such as %s"
+            % (script, ", ".join(_SCRIPT_EXAMPLES)))
+    try:
+        return regex.compile(r"\p{Script=%s}" % name)
+    except regex.error:
+        raise ScriptError(
+            "unknown Unicode Script %r for the active UCD (Unicode %s); try one "
+            "of %s, or any other Script name or 4-letter alias"
+            % (script, unicodedata.unidata_version, ", ".join(_SCRIPT_EXAMPLES)))
+
+
+# ---------------------------------------------------------------------------
 # Policy (spec section 9)
 # ---------------------------------------------------------------------------
 class Policy:
-    """The tunable knobs of spec section 9; defaults match the companion fixture."""
+    """The tunable knobs of spec section 9; defaults match the companion fixture.
+
+    ``target_script`` is required by the spec and has no default there; this
+    implementation defaults it to Latin (the v1.4-equivalent configuration) and
+    documents the deviation. ``min_latin_letters`` and ``numerals_bind_to_target``
+    are accepted as aliases (section 9).
+    """
 
     __slots__ = (
-        "strip_terminal_punct", "numerals_bind_to_latin", "trailing_digits_bind",
-        "max_bridge", "bidi_controls", "min_latin_letters", "affinity_overrides",
-        "cjk_punct_strong",
+        "target_script", "strip_terminal_punct", "numerals_bind_to_latin",
+        "trailing_digits_bind", "max_bridge", "bidi_controls",
+        "min_target_letters", "affinity_overrides", "cjk_punct_strong",
     )
 
-    def __init__(self, strip_terminal_punct=True, numerals_bind_to_latin=False,
-                 trailing_digits_bind=True, max_bridge=None, bidi_controls="strip",
-                 min_latin_letters=1, affinity_overrides=None, cjk_punct_strong=True):
+    def __init__(self, target_script=DEFAULT_SCRIPT, strip_terminal_punct=True,
+                 numerals_bind_to_latin=False, trailing_digits_bind=True,
+                 max_bridge=None, bidi_controls="strip", min_target_letters=1,
+                 affinity_overrides=None, cjk_punct_strong=True,
+                 min_latin_letters=None, numerals_bind_to_target=None):
+        script_matcher(target_script)           # validate eagerly (section 2.2)
+        self.target_script = target_script
         self.strip_terminal_punct = strip_terminal_punct
-        self.numerals_bind_to_latin = numerals_bind_to_latin
+        self.numerals_bind_to_latin = (numerals_bind_to_latin
+                                       if numerals_bind_to_target is None
+                                       else numerals_bind_to_target)
         self.trailing_digits_bind = trailing_digits_bind
         self.max_bridge = max_bridge            # None == infinity (no limit)
         self.bidi_controls = bidi_controls      # "strip" | "preserve_pairs"
-        self.min_latin_letters = min_latin_letters
+        self.min_target_letters = (min_target_letters if min_latin_letters is None
+                                   else min_latin_letters)
         self.affinity_overrides = affinity_overrides or {}   # {codepoint: affinity}
         self.cjk_punct_strong = cjk_punct_strong
 
@@ -165,7 +246,6 @@ class Policy:
 # ---------------------------------------------------------------------------
 # Unicode property helpers
 # ---------------------------------------------------------------------------
-_RE_LATIN = regex.compile(r"\p{Script=Latin}")
 _RE_COMMON = regex.compile(r"\p{Script=Common}")
 _RE_INHERITED = regex.compile(r"\p{Script=Inherited}")
 _RE_PICTO = regex.compile(r"\p{Extended_Pictographic}")
@@ -173,10 +253,15 @@ _RE_RI = regex.compile(r"\p{Regional_Indicator}")
 
 
 @lru_cache(maxsize=None)
-def script_kind(ch):
-    """One of 'Latin', 'Common', 'Inherited', 'Other' for a single character."""
-    if _RE_LATIN.match(ch):
-        return "Latin"
+def script_kind(ch, target_script):
+    """One of 'Target', 'Common', 'Inherited', 'Other' for a single character.
+
+    The base rule of spec section 5.1: a single equality test of the character's
+    Script property against the configured target, with Common/Inherited held
+    aside as the neutrals.
+    """
+    if script_matcher(target_script).match(ch):
+        return "Target"
     if _RE_COMMON.match(ch):
         return "Common"
     if _RE_INHERITED.match(ch):
@@ -194,11 +279,13 @@ def is_regional_indicator(ch):
     return bool(_RE_RI.match(ch))
 
 
-def is_latin_letter(ch):
-    return unicodedata.category(ch).startswith("L") and script_kind(ch) == "Latin"
+def is_target_letter(ch, target_script):
+    """A category-L* character whose Script is the target (section 10.2)."""
+    return (unicodedata.category(ch).startswith("L")
+            and script_kind(ch, target_script) == "Target")
 
 
-def classification_code_point(cluster):
+def classification_code_point(cluster, target_script):
     """Return (codepoint, kind) for a cluster's classification char (section 4.1).
 
     The first code point, unless its script is Inherited, in which case the first
@@ -206,11 +293,11 @@ def classification_code_point(cluster):
     degenerate (bare combining marks) and 'Inherited' is returned.
     """
     first = cluster[0]
-    kind = script_kind(first)
+    kind = script_kind(first, target_script)
     if kind != "Inherited":
         return ord(first), kind
     for ch in cluster:
-        kind = script_kind(ch)
+        kind = script_kind(ch, target_script)
         if kind != "Inherited":
             return ord(ch), kind
     return ord(first), "Inherited"
@@ -234,7 +321,11 @@ def cluster_is_stop(cluster):
 
 
 def affinity_of(cluster, ccp, policy):
-    """Binding affinity of a NEUTRAL cluster (spec section 7.3, first match wins)."""
+    """Binding affinity of a NEUTRAL cluster (spec section 7.3, first match wins).
+
+    Independent of the configured target script — only the neutral cluster itself
+    and the policy overrides decide.
+    """
     # 1. policy overrides, keyed by classification code point
     ov = policy.affinity_overrides.get(ccp)
     if ov is not None:
@@ -271,7 +362,7 @@ class Cluster:
 
     def __init__(self, s, cls, aff, ccp, start):
         self.s = s              # the grapheme cluster text
-        self.cls = cls          # LATIN / BASE / NEUTRAL / CONTROL / HARD_BREAK
+        self.cls = cls          # TARGET / OTHER / NEUTRAL / CONTROL / HARD_BREAK
         self.aff = aff          # binding affinity (NEUTRAL only), else None
         self.ccp = ccp          # classification code point (or None)
         self.start = start      # code-point offset of the cluster in the source
@@ -280,6 +371,7 @@ class Cluster:
 
 def classify_text(text, policy):
     """Return the list of classified Cluster objects for the whole text."""
+    target = policy.target_script
     clusters = []
     offset = 0
     prev_class = None  # class of the nearest preceding non-degenerate cluster
@@ -292,18 +384,18 @@ def classify_text(text, policy):
             cls, aff, ccp = CONTROL, None, cp0
             # controls do not update prev_class for the degenerate-mark rule
         else:
-            ccp, kind = classification_code_point(s)
-            if kind == "Latin":
-                cls = LATIN
+            ccp, kind = classification_code_point(s, target)
+            if kind == "Target":
+                cls = TARGET
             elif kind == "Other":
-                cls = BASE
+                cls = OTHER
             elif kind == "Inherited":
                 # Degenerate all-Inherited cluster (section 5.2b): take the class
                 # of the nearest preceding non-degenerate cluster, else NEUTRAL.
-                cls = prev_class if prev_class in (LATIN, BASE, NEUTRAL) else NEUTRAL
+                cls = prev_class if prev_class in (TARGET, OTHER, NEUTRAL) else NEUTRAL
             else:  # Common
                 if policy.cjk_punct_strong and ccp in CJK_STRONG:
-                    cls = BASE            # section 5.2e strengthening
+                    cls = OTHER           # section 5.2e strengthening
                 else:
                     cls = NEUTRAL
             aff = affinity_of(s, ccp, policy) if cls == NEUTRAL else None
@@ -317,8 +409,8 @@ def classify_text(text, policy):
 # Directional neutral-resolution scans (spec section 7.4, 7.5, pseudocode 11.2)
 # ---------------------------------------------------------------------------
 def split_leading(members, policy):
-    """Leading glue: L in {BASE, EDGE}, R = LATIN. Scan right-to-left from the
-    Latin edge; return the number of trailing clusters absorbed into the run."""
+    """Leading glue: L in {OTHER, EDGE}, R = TARGET. Scan right-to-left from the
+    target-script edge; return the number of trailing clusters absorbed."""
     committed = len(members)  # index; clusters [committed:] are absorbed
     for i in range(len(members) - 1, -1, -1):
         a = members[i].aff
@@ -334,8 +426,8 @@ def split_leading(members, policy):
 
 
 def split_trailing(members, R, policy):
-    """Trailing glue: L = LATIN, R in {BASE, EDGE}. Scan left-to-right from the
-    Latin edge; return the number of leading clusters absorbed into the run."""
+    """Trailing glue: L = TARGET, R in {OTHER, EDGE}. Scan left-to-right from the
+    target-script edge; return the number of leading clusters absorbed."""
     committed = -1          # index; clusters [:committed + 1] are absorbed
     group_open = False
     group_end = -1          # index of the last DIGIT in the current group
@@ -344,8 +436,8 @@ def split_trailing(members, R, policy):
         nonlocal committed, group_open, group_end
         if group_open:
             # Section 7.5 rule 2: a closed digit group self-commits unless it
-            # abuts following BASE text at the run end (abutment exception).
-            if policy.trailing_digits_bind and not (at_run_end and R == BASE):
+            # abuts following OTHER text at the run end (abutment exception).
+            if policy.trailing_digits_bind and not (at_run_end and R == OTHER):
                 committed = group_end
             group_open = False
 
@@ -371,7 +463,7 @@ def split_trailing(members, R, policy):
 
 
 # ---------------------------------------------------------------------------
-# Union-find over Latin-run group ids (merges join sandwiched runs)
+# Union-find over target-run group ids (merges join sandwiched runs)
 # ---------------------------------------------------------------------------
 class _UF:
     def __init__(self):
@@ -453,18 +545,20 @@ def trim(members, policy):
 
 
 def validate(members, policy):
-    n = sum(1 for m in members for ch in m.s if is_latin_letter(ch))
-    return n >= policy.min_latin_letters
+    target = policy.target_script
+    n = sum(1 for m in members for ch in m.s if is_target_letter(ch, target))
+    return n >= policy.min_target_letters
 
 
 # ---------------------------------------------------------------------------
 # The extractor (spec section 11.2)
 # ---------------------------------------------------------------------------
-def extract_latin_runs(text, policy=None):
-    """Extract Latin runs from ``text``.
+def extract_script_runs(text, policy=None):
+    """Extract target-script runs from ``text``.
 
     Returns a list of ``(substring, start, end)`` tuples, in logical order, where
-    ``start``/``end`` are code-point offsets into the original string.
+    ``start``/``end`` are code-point offsets into the original string. With the
+    default policy the target script is Latin, reproducing spec v1.4 behaviour.
     """
     if policy is None:
         policy = Policy()
@@ -489,7 +583,7 @@ def extract_latin_runs(text, policy=None):
             runs.append([c.cls, i, i])
 
     def eff(run_pos):
-        """Effective neighbour class LATIN | BASE | EDGE."""
+        """Effective neighbour class TARGET | OTHER | EDGE."""
         if run_pos < 0 or run_pos >= len(runs):
             return EDGE
         cls = runs[run_pos][0]
@@ -501,7 +595,7 @@ def extract_latin_runs(text, policy=None):
     owner = [None] * len(analysis)
     uf = _UF()
     for r in runs:
-        if r[0] == LATIN:
+        if r[0] == TARGET:
             gid = r[1]
             uf.add(gid)
             for i in range(r[1], r[2] + 1):
@@ -524,16 +618,16 @@ def extract_latin_runs(text, policy=None):
         lo, hi = r[1], r[2]
         members = analysis[lo:hi + 1]
         L, R = eff(k - 1), eff(k + 1)
-        if L == LATIN and R == LATIN:                      # section 7.1 sandwich
+        if L == TARGET and R == TARGET:                    # section 7.1 sandwich
             if policy.max_bridge is None or len(members) <= policy.max_bridge:
                 gl, gr = left_gid(k), right_gid(k)
                 for i in range(lo, hi + 1):
                     owner[i] = gl
                 uf.union(gl, gr)
             # else: bridge guard -> DISCARD (leave flanking runs separate)
-        elif L != LATIN and R != LATIN:                    # section 7.2 isolation
+        elif L != TARGET and R != TARGET:                  # section 7.2 isolation
             pass
-        elif R == LATIN:                                   # section 7.4 leading
+        elif R == TARGET:                                  # section 7.4 leading
             m = split_leading(members, policy)
             gr = right_gid(k)
             for i in range(hi - m + 1, hi + 1):
@@ -544,7 +638,7 @@ def extract_latin_runs(text, policy=None):
             for i in range(lo, lo + kcount):
                 owner[i] = gl
 
-    # Assemble contiguous same-group segments into Latin runs.
+    # Assemble contiguous same-group segments into target-script runs.
     results = []
     i, n = 0, len(analysis)
     while i < n:
@@ -619,6 +713,15 @@ def _parse_affinity_override(token):
     return _parse_codepoint(cp_tok), aff
 
 
+def _parse_script(token):
+    """Validate a --script value, reporting unknown names as a usage error."""
+    try:
+        script_matcher(token)
+    except ScriptError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+    return token.strip()
+
+
 def _parse_max_bridge(token):
     t = token.strip().lower()
     if t in ("inf", "none", "infinity", ""):
@@ -634,13 +737,17 @@ def _parse_max_bridge(token):
 
 def build_arg_parser():
     p = argparse.ArgumentParser(
-        prog="latin-runs",
-        description="Extract embedded Latin-script runs from mixed-script Unicode "
-                    "text (spec v1.4).",
+        prog="script-runs",
+        description="Extract embedded runs of one Unicode script from "
+                    "mixed-script text (spec v2.0).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("file", nargs="?", metavar="FILE",
                    help="text file to read (UTF-8); omit to read from stdin")
+    p.add_argument("-s", "--script", type=_parse_script, default=DEFAULT_SCRIPT,
+                   metavar="SCRIPT",
+                   help="Unicode Script to extract, e.g. Greek, Cyrillic, Arabic, "
+                        "Hebrew (default: %s)" % DEFAULT_SCRIPT)
     p.add_argument("--encoding", default="utf-8",
                    help="input encoding (default: utf-8)")
     p.add_argument("--json", action="store_true",
@@ -652,9 +759,10 @@ def build_arg_parser():
     g.add_argument("--no-strip-terminal-punct", dest="strip_terminal_punct",
                    action="store_false",
                    help="keep trailing . , ; : ! ? captured as trailing glue")
-    g.add_argument("--numerals-bind-to-latin", action="store_true",
-                   help="leading digit groups bind to Latin without a RIGHT anchor "
-                        "(captures a bare '2026 Windows')")
+    g.add_argument("--numerals-bind", "--numerals-bind-to-latin",
+                   dest="numerals_bind_to_latin", action="store_true",
+                   help="leading digit groups bind to the target script without a "
+                        "RIGHT anchor (captures a bare '2026 Windows')")
     g.add_argument("--no-trailing-digits-bind", dest="trailing_digits_bind",
                    action="store_false",
                    help="trailing digit groups stay provisional (symmetric with "
@@ -666,8 +774,10 @@ def build_arg_parser():
     g.add_argument("--bidi-controls", choices=("strip", "preserve_pairs"),
                    default="strip",
                    help="how to handle bidi formatting characters (default: strip)")
-    g.add_argument("--min-latin-letters", type=int, default=1, metavar="N",
-                   help="minimum Latin letters for a run to be emitted (default: 1)")
+    g.add_argument("--min-target-letters", "--min-latin-letters",
+                   dest="min_target_letters", type=int, default=1, metavar="N",
+                   help="minimum target-script letters for a run to be emitted "
+                        "(default: 1)")
     g.add_argument("--affinity-override", action="append", default=[],
                    type=_parse_affinity_override, metavar="CP=AFFINITY",
                    help="override a cluster's binding affinity, e.g. "
@@ -675,18 +785,19 @@ def build_arg_parser():
     g.add_argument("--no-cjk-punct-strong", dest="cjk_punct_strong",
                    action="store_false",
                    help="do not strengthen CJK punctuation / full-width forms to "
-                        "BASE (they become neutral glue)")
+                        "strong (they become neutral glue)")
     return p
 
 
 def policy_from_args(args):
     return Policy(
+        target_script=args.script,
         strip_terminal_punct=args.strip_terminal_punct,
         numerals_bind_to_latin=args.numerals_bind_to_latin,
         trailing_digits_bind=args.trailing_digits_bind,
         max_bridge=args.max_bridge,
         bidi_controls=args.bidi_controls,
-        min_latin_letters=args.min_latin_letters,
+        min_target_letters=args.min_target_letters,
         affinity_overrides=dict(args.affinity_override),
         cjk_punct_strong=args.cjk_punct_strong,
     )
@@ -717,19 +828,20 @@ def main(argv=None):
                 data = fh.read()
         text = data.decode(args.encoding)
     except OSError as exc:
-        sys.stderr.write("latin-runs: cannot read input: %s\n" % exc)
+        sys.stderr.write("script-runs: cannot read input: %s\n" % exc)
         return 1
     except (UnicodeDecodeError, LookupError) as exc:
-        sys.stderr.write("latin-runs: cannot decode input as %s: %s\n"
+        sys.stderr.write("script-runs: cannot decode input as %s: %s\n"
                          % (args.encoding, exc))
         return 1
 
-    runs = extract_latin_runs(text, policy_from_args(args))
+    runs = extract_script_runs(text, policy_from_args(args))
 
     if args.json:
         for substring, start, end in runs:
             sys.stdout.write(json.dumps(
-                {"text": substring, "start": start, "end": end},
+                {"text": substring, "start": start, "end": end,
+                 "script": args.script},
                 ensure_ascii=False) + "\n")
     else:
         for substring, start, end in runs:

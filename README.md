@@ -29,9 +29,9 @@ for each are below.
 | [`git-prune.py`](#git-prunepy) | Delete local Git branches that no longer exist on a remote. |
 | [`git-switch.py`](#git-switchpy) | Interactive, vim-style Git branch switcher with a collapsible folder tree and remote branches. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
-| [`latin-runs.py`](#latin-runspy) | Extract embedded Latin-script runs (with their neutral glue) from mixed-script Unicode text. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
+| [`script-runs.py`](#script-runspy) | Extract embedded runs of one Unicode script (with their neutral glue) from mixed-script text. |
 | [`unicode-clipboard.py`](#unicode-clipboardpy) | Copy Unicode characters to the clipboard by codepoint, so you can paste the untypeable. |
 | [`unicode-info.py`](#unicode-infopy) | Fetch and display Unicode character information for a codepoint. |
 | [`update-scripts.py`](#update-scriptspy) | Update these scripts in place by fast-forwarding the checkout they live in. |
@@ -1236,59 +1236,86 @@ Exit status: `0` success · `1` the file is not a readable `.docx` ·
 
 ---
 
-## `latin-runs.py`
+## `script-runs.py`
 
-Extracts every embedded **Latin-script run** — English phrases, product names,
-URLs, version strings, copyright notices — from text whose primary content is
-one or more **non-Latin scripts** (Korean, Arabic, Hebrew, …), including
-right-to-left ones. Each run is reported with the language-**neutral glue**
-(digits, spaces, punctuation, symbols) that logically belongs to it, and with
-its `(start, end)` offsets.
+Extracts every embedded run of **one Unicode script** — English phrases, product
+names, URLs, version strings and copyright notices when the target is Latin;
+embedded Greek, Cyrillic, Arabic or Hebrew phrases when those are the target —
+from text whose primary content is written in some **other** script (Korean,
+Arabic, Hebrew, …), including right-to-left ones. Each run is reported with the
+language-**neutral glue** (digits, spaces, punctuation, symbols) that logically
+belongs to it, and with its `(start, end)` offsets.
 
 The whole difficulty is the neutral characters. A comma, a space, a `©`, or a
 digit carries no script identity of its own, yet it may be an integral part of a
-Latin entity (`Windows 11 (23H2)`, `© 2026 Example Corp`, `macOS™`) — or it may
-be a bridge between the surrounding non-Latin text and an English phrase, in
-which case it belongs to neither. This tool folds neutral glue **in** when it
-belongs (internally, trailing, or leading) and leaves it **out** when it bridges
-or dangles, in all positions. It is a conforming implementation of *"Latin Run
-Extraction from Mixed-Script Text"*, spec v1.4 (in
-[`docs/`](docs/latin-run-extraction-spec-v1.4.md)), which adapts the
+target-script entity (`Windows 11 (23H2)`, `© 2026 Example Corp`, `macOS™`,
+`Αθήνα 2026`) — or it may be a bridge between the surrounding host text and the
+embedded phrase, in which case it belongs to neither. This tool folds neutral
+glue **in** when it belongs (internally, trailing, or leading) and leaves it
+**out** when it bridges or dangles, in all positions. It is a conforming
+implementation of *"Script Run Extraction from Mixed-Script Text"*, spec v2.0
+(in [`docs/`](docs/script-run-extraction-spec.md)), which adapts the
 neutral-resolution phase of the Unicode Bidirectional Algorithm (UAX #9): every
 strong script is treated alike and all work happens in **logical order**, so the
 result is indifferent to RTL display.
 
+Only the *identity* of the extracted script is a parameter — every other rule
+(neutral resolution, bidi handling, affinity, digits, hard breaks, trimming) is
+the same whichever script you pick. `--script Latin`, the default, is
+bit-for-bit the behaviour of the predecessor spec v1.4.
+
 ### Usage
 
 ```sh
-latin-runs [FILE] [policy options]
+script-runs [FILE] [--script SCRIPT] [policy options]
 ```
 
 or invoke the script directly:
 
 ```sh
-uv run latin-runs.py [FILE] [policy options]
+uv run script-runs.py [FILE] [--script SCRIPT] [policy options]
 ```
 
 - Pass `FILE` to read a UTF-8 text file, or **omit it to read from stdin**.
+- `--script` (`-s`) takes any Unicode `Script` name or 4-letter alias —
+  `Greek`, `Cyrillic`, `Arabic`, `Hebrew`, `Devanagari`, `Cyrl`, … — and
+  **defaults to `Latin`**. An unknown value is a usage error listing examples.
 - Each extracted run prints as `start  end  text` (offsets in **code points**);
   `--json` emits one JSON object per run instead.
-- Run `latin-runs --help` for the full reference.
+- Run `script-runs --help` for the full reference.
 
 ```sh
-# a URL embedded in Korean, from stdin
-echo '주소는 https://example.com/a?b=1 입니다' | latin-runs
+# a URL embedded in Korean, from stdin (Latin is the default target)
+echo '주소는 https://example.com/a?b=1 입니다' | script-runs
 #      4     29  https://example.com/a?b=1
 
-# a copyright line embedded after a Korean sentence
-echo '텍스트. © 2026 Watch Tower Bible and Tract Society of Pennsylvania' | latin-runs
+# the same mechanics with a Greek target: the trailing digit group binds
+echo '한국어 Αθήνα 2026 텍스트' | script-runs --script Greek
+#      4     14  Αθήνα 2026
 
-# machine-readable output
-latin-runs --json report.txt
+# Arabic embedded in Hebrew — the © anchors the year to the Arabic run
+echo 'עברית © 2026 العربية סוף' | script-runs -s Arabic
+#      6     20  © 2026 العربية
+
+# a copyright line embedded after a Korean sentence
+echo '텍스트. © 2026 Watch Tower Bible and Tract Society of Pennsylvania' | script-runs
+
+# machine-readable output (each object also carries the target "script")
+script-runs --script Cyrillic --json report.txt
 
 # capture a bare leading year that defaults would drop (© would anchor it)
-echo '한국어 100 GB+ 저장' | latin-runs --numerals-bind-to-latin   # -> 100 GB+
+echo '한국어 100 GB+ 저장' | script-runs --numerals-bind   # -> 100 GB+
 ```
+
+Because the strong classes swap with the parameter, the *same* text partitions
+differently per target — that is the point, not a discrepancy:
+
+```sh
+echo '한국어 Windows 11, Αθήνα 2026 텍스트' | script-runs              # -> Windows 11
+echo '한국어 Windows 11, Αθήνα 2026 텍스트' | script-runs -s Greek     # -> Αθήνα 2026
+```
+
+To extract several scripts, run the tool once per script (spec §1.3).
 
 ### Policy knobs
 
@@ -1297,25 +1324,30 @@ Every knob from spec §9 is exposed as a flag; the engine takes the defaults
 
 | Option | Effect |
 | ------ | ------ |
+| `-s`, `--script <SCRIPT>` | The Unicode `Script` to extract (default: `Latin`). |
 | `--no-strip-terminal-punct` | Keep a trailing `. , ; : ! ?` that was captured as glue (default: strip it — it usually punctuates the *host* sentence). |
-| `--numerals-bind-to-latin` | Let a **leading** digit group bind to adjacent Latin without a `©`-style anchor (captures a bare `2026 Windows`). |
+| `--numerals-bind` | Let a **leading** digit group bind to adjacent target-script text without a `©`-style anchor (captures a bare `2026 Windows`). Spelled `--numerals-bind-to-latin` in the spec; both are accepted. |
 | `--no-trailing-digits-bind` | Make **trailing** digit groups purely provisional, so `Windows 11` → `Windows` (symmetric with leading behaviour). |
-| `--max-bridge <N>` | Refuse the sandwich merge when the neutral run between two Latin runs is longer than `N` grapheme clusters (default: `inf`, no limit). |
+| `--max-bridge <N>` | Refuse the sandwich merge when the neutral run between two target-script runs is longer than `N` grapheme clusters (default: `inf`, no limit). |
 | `--bidi-controls {strip,preserve_pairs}` | How to treat bidi formatting characters (default: `strip` them before analysis). |
-| `--min-latin-letters <N>` | Minimum Latin letters for a run to be emitted (default: `1`). |
+| `--min-target-letters <N>` | Minimum target-script letters for a run to be emitted (default: `1`). `--min-latin-letters` is accepted as an alias. |
 | `--affinity-override CP=AFFINITY` | Move a character's binding affinity, e.g. `U+00AE=RIGHT` to make `®` a prefix anchor. Repeatable. `AFFINITY` ∈ `RIGHT,LEFT,SEP,DIGIT,STOP`. |
-| `--no-cjk-punct-strong` | Do **not** strengthen CJK punctuation / full-width forms to strong (they become neutral glue, so `Alpha。Beta` merges into one run). |
+| `--no-cjk-punct-strong` | Do **not** strengthen CJK punctuation / full-width forms to strong (they become neutral glue, so `Alpha。Beta` merges into one run). Set this when the **target** is itself a CJK script. |
 
 ```sh
 # keep host-sentence punctuation and require at least 3 Latin letters
-latin-runs --no-strip-terminal-punct --min-latin-letters 3 notes.txt
+script-runs --no-strip-terminal-punct --min-target-letters 3 notes.txt
 
 # treat the registered-trademark sign as a leading anchor
-echo '한국어 ®Brand 텍스트' | latin-runs --affinity-override U+00AE=RIGHT   # -> ®Brand
+echo '한국어 ®Brand 텍스트' | script-runs --affinity-override U+00AE=RIGHT   # -> ®Brand
 ```
 
 ### Notes & caveats
 
+- **`--script` defaults to `Latin`, which is a documented deviation.** Spec §9
+  makes `target_script` a required knob with no default; defaulting it keeps the
+  bare command useful and reproduces the v1.4-equivalent configuration exactly
+  (spec §2.1). Everything else is at the spec's defaults.
 - **Offsets are code points** into the original string (the documented unit).
   In the default `strip` mode `text[start:end]` is exactly the emitted run; under
   `--bidi-controls preserve_pairs` the span may still enclose shed (unmatched)
@@ -1325,24 +1357,29 @@ echo '한국어 ®Brand 텍스트' | latin-runs --affinity-override U+00AE=RIGHT
   whole pair falls within that one run; a pair that would straddle a run boundary
   is excluded entirely (spec §8.2). For matching, indexing, and translation
   memory, the default `strip` is the right choice.
+- **Script-bound digits belong to their own script.** Arabic-Indic digits
+  (`٢٠٢٦`) are strong, never absorbable glue, unless Arabic *is* the target;
+  ASCII digits are always neutral. No digit is ever promoted to the target class
+  merely because its `Script_Extensions` mentions it (spec §5.2d).
 - **Full-width digits are never captured as a trailing version number.** Unlike
   ASCII digits (`Windows 11` → `Windows 11`), `Windows １１` yields `Windows`:
   a full-width character signals CJK context and is treated as host text
   (spec §5.2e, §7.3), the same reasoning that makes Arabic-Indic digits strong.
-- **Unicode data comes from two sources**, reported by `latin-runs
+- **Unicode data comes from two sources**, reported by `script-runs
   --unicode-version`: the third-party `regex` module supplies UAX #29 grapheme
   segmentation and the `Script` / `Script_Extensions` / `Extended_Pictographic`
   / `Regional_Indicator` properties; the standard library's `unicodedata`
   supplies general categories. The spec's minimum reference is Unicode 16.0;
   documented differences from a later UCD version are not conformance failures.
-- Conformance is checked by `tests/test_latin_runs.py`, which drives all 29 cases
-  of the machine-readable fixture (`docs/latin-run-extraction-tests.json`) plus
+- Conformance is checked by `tests/test_script_runs.py`, which drives all 29
+  Latin cases and all 11 generalization cases (Greek, Cyrillic, Arabic, Hebrew)
+  of the machine-readable fixture (`docs/script-run-extraction-tests.json`) plus
   its per-knob sensitivity variants.
 
 Exit status: `0` success · `1` the input could not be read or decoded ·
-`2` usage error (bad or missing arguments).
+`2` usage error (bad or missing arguments, unknown script).
 
-**Requirements:** Python 3.7+ and the [`regex`](https://pypi.org/project/regex/)
+**Requirements:** Python 3.8+ and the [`regex`](https://pypi.org/project/regex/)
 module (Python's `unicodedata` has no `Script` property or grapheme
 segmentation). The dependency is declared inline in the script, so the wrapper's
 `uv run` installs it automatically; if you invoke the `.py` with plain Python,
