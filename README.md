@@ -29,6 +29,7 @@ for each are below.
 | [`git-prune.py`](#git-prunepy) | Delete local Git branches that no longer exist on a remote. |
 | [`git-switch.py`](#git-switchpy) | Interactive, vim-style Git branch switcher with a collapsible folder tree and remote branches. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
+| [`inspect-nuget-package.py`](#inspect-nuget-packagepy) | List the .NET API symbols in a NuGet package, or check whether one exists. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
 | [`script-runs.py`](#script-runspy) | Extract embedded runs of one Unicode script (with their neutral glue) from mixed-script text. |
@@ -232,6 +233,112 @@ cat feed.xml | python html-info.py
 - HTML is parsed leniently enough for common real-world files, while XML/XHTML
   declarations and namespaces are still surfaced when present.
 - **Requirements:** Python 3.6+ (standard library only; no dependencies).
+
+---
+
+## `inspect-nuget-package.py`
+
+Lists every **.NET API symbol** in a **NuGet package** (`.nupkg`), or checks
+whether a specific one **exists** — handy before adding a package reference,
+to confirm the type or method you need is actually in the version you're
+about to pull in.
+
+A `.nupkg` is just a ZIP of one or more managed assemblies, typically under
+`lib/<TFM>/`. This reads each assembly's CLR metadata **directly out of the
+ZIP** — no C#/.NET toolchain, no `ildasm`, nothing extracted to disk — using
+the pure-Python [`dnfile`](https://github.com/malwarefrank/dnfile) library to
+parse the ECMA-335 metadata tables. It reports:
+
+| Kind | What |
+| ---- | ---- |
+| `type` | class, interface, struct, enum, or delegate |
+| `method` | including constructors and property/event accessors |
+| `field` | |
+| `property` | |
+| `event` | |
+
+Symbols are named the way .NET reflection names them: `Namespace.Type` for a
+type (`Outer+Inner` for a nested one), `Namespace.Type.Member` for a member.
+By default only the **public API surface** is shown (public and protected —
+i.e. anything a consumer outside the assembly could reach, directly or via
+inheritance); pass `--all` for internal/private too. A package with several
+near-identical `lib/<tfm>/` builds (common — many packages ship the same
+assembly for 5+ target frameworks) has its symbols **merged**, so each one is
+reported once rather than once per framework.
+
+### Usage
+
+```sh
+inspect-nuget-package PACKAGE.nupkg [options]
+```
+
+or invoke the script directly:
+
+```sh
+python inspect-nuget-package.py PACKAGE.nupkg [options]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `--check <symbol>` | Check whether `<symbol>` exists instead of listing everything; exit status reflects the result. |
+| `--contains` | Match `--check` as a substring instead of requiring an exact match. |
+| `-i`, `--ignore-case` | Case-insensitive matching for `--check`. |
+| `--all` | Include non-public symbols too (default: public API surface only). |
+| `--kind <kind>` | Restrict to one symbol kind (`type`, `method`, `field`, `property`, `event`); repeatable. |
+| `--tfm <name>` | Only scan assemblies under `lib/<name>/` or `ref/<name>/` (default: every assembly in the package). |
+| `--list-tfms` | List the target-framework folders in the package and exit. |
+| `--json` | Emit JSON instead of a human-readable listing. |
+
+```sh
+# list every public symbol
+python inspect-nuget-package.py newtonsoft.json.13.0.3.nupkg
+
+# does this package expose JsonConvert.SerializeObject?
+python inspect-nuget-package.py newtonsoft.json.13.0.3.nupkg \
+    --check Newtonsoft.Json.JsonConvert.SerializeObject
+
+# same question, just by the bare method name, case-insensitively
+python inspect-nuget-package.py newtonsoft.json.13.0.3.nupkg --check serializeobject -i
+
+# see which target frameworks a package ships
+python inspect-nuget-package.py somepackage.nupkg --list-tfms
+
+# restrict to one framework's build, include internal members, JSON out
+python inspect-nuget-package.py somepackage.nupkg --tfm net6.0 --all --json
+```
+
+Run `python inspect-nuget-package.py --help` for the full reference.
+
+### Notes & caveats
+
+- **A bare (dot-free) `--check` query matches by last segment.** `--check
+  SerializeObject` matches any type or member whose own name is
+  `SerializeObject`, regardless of namespace/declaring type; include a `.` or
+  `+` (e.g. `Newtonsoft.Json.JsonConvert.SerializeObject`) to match the full
+  path instead.
+- **Only parameter *count* is decoded for methods, not full signatures.**
+  Decoding complete parameter/return types needs a much larger ECMA-335
+  signature decoder; this reads just enough of the signature blob to recover
+  the arity, which is enough to tell most overloads apart in a listing — but
+  two overloads sharing the same parameter count collapse into one entry.
+- **Compiler-generated noise is always excluded**, even with `--all`: backing
+  fields, closures, and iterator/async state machines all have names
+  containing `<` or `>`, which is never a legal source identifier and never
+  what "a symbol in this package" means.
+- **Type-forwarded symbols aren't followed.** A facade/reference assembly that
+  forwards a type elsewhere (an ECMA-335 `ExportedType`, common in
+  `netstandard` reference assemblies) is not resolved to its real definition;
+  only types actually defined in a scanned assembly are reported.
+- A `.dll` in the package that isn't a .NET assembly (or can't be parsed) is
+  skipped with a warning on stderr; the rest of the package is still scanned.
+
+Exit status: `0` success (listing produced, or `--check` found a match) ·
+`1` the symbol wasn't found (`--check`), or the package/assembly couldn't be
+read · `2` usage error (bad or missing arguments).
+
+**Requirements:** Python 3.6+ and [`uv`](https://docs.astral.sh/uv/) (installs
+[`dnfile`](https://pypi.org/project/dnfile/) automatically), or `pip install
+dnfile` to run the `.py` directly.
 
 ---
 
