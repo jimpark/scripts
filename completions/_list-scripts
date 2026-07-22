@@ -1,0 +1,37 @@
+#compdef list-scripts list-scripts.py
+# Zsh completion for list-scripts: its options, and the collection's own script
+# names as search terms.
+#
+# Enable it by putting this directory on fpath before compinit runs:
+#     fpath=($HOME/scripts/completions $fpath)
+#     autoload -Uz compinit && compinit
+
+_list-scripts() {
+    local -a modes
+    # The output modes are mutually exclusive, so offering one suppresses the
+    # others — the same rule the script itself enforces.
+    modes=(-1 --names-only --markdown --json --check)
+
+    _arguments -s \
+        '(-h --help)'{-h,--help}'[show help and exit]' \
+        '(-l --long)'{-l,--long}'[also print a paragraph of detail per script]' \
+        '(-r --regex)'{-r,--regex}'[treat terms as regular expressions]' \
+        "($modes)"{-1,--names-only}'[print bare names, one per line]' \
+        "($modes)--markdown[print the summary table in README format]" \
+        "($modes)--json[print the listing as JSON]" \
+        "($modes)--check[report README/filesystem inconsistencies]" \
+        '-C[list this directory instead of the script'\''s own]:directory:_files -/' \
+        '--color[colourise the output]:when:(auto always never)' \
+        '(-V --version)'{-V,--version}'[print the version and exit]' \
+        '*:term:_list_scripts_names'
+}
+
+_list_scripts_names() {
+    local -a names
+    # -1 exists for exactly this: bare names, one per line. Asking the script
+    # itself means the completion can never fall out of date with the folder.
+    names=(${(f)"$(_call_program list-scripts list-scripts -1 2>/dev/null)"})
+    _describe -t scripts 'script' names
+}
+
+_list-scripts "$@"

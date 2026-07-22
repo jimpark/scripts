@@ -30,6 +30,7 @@ for each are below.
 | [`git-switch.py`](#git-switchpy) | Interactive, vim-style Git branch switcher with a collapsible folder tree and remote branches. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`inspect-nuget-package.py`](#inspect-nuget-packagepy) | List the .NET API symbols in a NuGet package, or check whether one exists. |
+| [`list-scripts.py`](#list-scriptspy) | Print this table in the terminal — find the script you need without opening the README. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
 | [`script-runs.py`](#script-runspy) | Extract embedded runs of one Unicode script (with their neutral glue) from mixed-script text. |
@@ -38,6 +39,8 @@ for each are below.
 | [`update-scripts.py`](#update-scriptspy) | Update these scripts in place by fast-forwarding the checkout they live in. |
 
 **macOS:** Each script has a matching bash wrapper with the same base name (e.g. `backport`, `baseconv`). Add the `scripts/` folder to your `PATH` and invoke any script by its bare name — no `python` prefix, no directory qualifier needed.
+
+**Finding a script:** [`list-scripts`](#list-scriptspy) prints the table above in your terminal, and `list-scripts git` narrows it to the matches.
 
 ---
 
@@ -2244,6 +2247,136 @@ Exit status: `0` you quit normally (whether or not you opened anything) ·
 **Requirements:** Python 3.11+ (standard library only), Git on `PATH`, and the
 `branch_tui.py`, `editor_config.py`, and `editor_ide.py` modules beside it (all
 shared with `git-open.py` and `git-grep.py`).
+
+---
+
+## `list-scripts.py`
+
+Lists **every script in this collection**, one line each, so you can find the
+one you need without opening this file:
+
+```sh
+list-scripts          # the whole collection
+list-scripts git      # just the git tools
+```
+
+Terms are matched against **both the name and the summary** and are ANDed
+together, so `list-scripts git branch` finds the branch tools, and a search for
+`branch` turns up `git-switch` even though its name doesn't contain the word.
+
+### Where the summaries come from
+
+**The table at the top of this README is the source of truth.** Those
+one-liners are already written and curated, so the script reads them rather
+than keeping a second copy that could drift. A script the table doesn't cover
+still shows up — its summary is derived from its module docstring and tagged
+`(undocumented)`, so the gap is visible instead of silent.
+
+*What exists*, though, is decided by the filesystem: a `<name>.py` counts as a
+script if it has a launcher wrapper (`<name>` or `<name>.cmd`) or a row in the
+table. Everything else is a shared module (`branch_tui.py`, `editor_config.py`,
+`editor_ide.py`) and is left out.
+
+Because the two sources are independent, they can disagree — which is what
+`--check` is for. It reports scripts missing from the table, table rows with no
+script, missing wrappers, table links pointing at sections that don't exist,
+rows out of alphabetical order, and stray `.py` files that look like scripts but
+have neither a wrapper nor a row. It exits non-zero on any of those, so it works
+as a pre-commit sanity check on the collection itself:
+
+```sh
+list-scripts --check
+```
+
+`--markdown` closes the loop by regenerating the summary table in README
+format. Adding a script is: write it, add its two wrappers, then paste the
+regenerated table over the old one.
+
+### Usage
+
+```sh
+list-scripts [options] [TERM ...]
+```
+
+or invoke the script directly:
+
+```sh
+python list-scripts.py [options] [TERM ...]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `-l`, `--long` | Also print a paragraph of detail from each script's docstring. |
+| `-r`, `--regex` | Treat the `TERM`s as regular expressions. |
+| `-1`, `--names-only` | Print bare names, one per line (for scripting and completions). |
+| `--markdown` | Print the summary table in README format. |
+| `--json` | Print the listing as JSON. |
+| `--check` | Report README/filesystem inconsistencies and exit. |
+| `-C DIR` | List `DIR` instead of the folder the script lives in. |
+| `--color` | `auto` (default), `always`, or `never`. |
+| `-V`, `--version` | Print the version and exit. |
+
+```sh
+list-scripts                    # the whole collection
+list-scripts unicode text       # matching both terms
+list-scripts -r '^git-'         # match names by regex
+list-scripts -l script-runs     # one entry, with a paragraph of detail
+list-scripts --check            # README vs. reality
+list-scripts --markdown         # regenerate the table above
+```
+
+### Pre-commit hook
+
+`hooks/pre-commit` runs `--check` before every commit, so a script added
+without a README row — or a README row added without wrappers — is caught here
+rather than by whoever reads the table next. Git doesn't clone hooks, so enable
+it once per checkout:
+
+```sh
+git config core.hooksPath hooks
+```
+
+It checks the working tree rather than the staged snapshot (the two only differ
+when you're committing part of your changes, and the working tree is still the
+version that has to be consistent), and prints what's wrong along with the fix.
+`git commit --no-verify` bypasses it for one commit. If neither `python3` nor
+`uv` is on `PATH` it skips rather than blocking the commit.
+
+### Shell completion
+
+`completions/_list-scripts` is a zsh completion for the options above, with the
+collection's own script names offered as search terms — it shells out to
+`list-scripts -1`, so it can't fall out of date with the folder. Put the
+directory on `fpath` **before** `compinit` runs in your `.zshrc`:
+
+```sh
+[ -d "$HOME/scripts/completions" ] && fpath=("$HOME/scripts/completions" $fpath)
+autoload -Uz compinit && compinit
+```
+
+Then `list-scripts git-<TAB>` completes script names and `list-scripts --<TAB>`
+completes options. A new completion file sometimes needs a stale `~/.zcompdump`
+removed before zsh notices it.
+
+### Notes & caveats
+
+- **The output adapts to where it goes.** On a terminal, summaries wrap to its
+  width, `code` spans are highlighted, and names are padded into a column. When
+  piped, each script stays on exactly one line so `list-scripts | grep …`
+  behaves; colour follows `NO_COLOR` and `--color`.
+- **It lists its own folder**, resolved through symlinks, so it describes *this*
+  collection no matter which directory you run it from. `-C` points it
+  elsewhere.
+- **A summary is only as good as the table row**, and `-l` only as good as the
+  docstring: `--long` prints the first paragraph, plus the one after it when the
+  first is short enough to be just a restated title.
+- Filtering with no matches exits `1`, like `grep`.
+
+Exit status: `0` scripts were listed, or `--check` found nothing wrong ·
+`1` nothing matched the filter, or `--check` found a problem · `2` usage error
+(bad or missing arguments).
+
+**Requirements:** Python 3.6+ (standard library only; no dependencies).
 
 ---
 

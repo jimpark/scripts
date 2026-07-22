@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Pre-commit hook: keep the script collection self-consistent.
+#
+# Runs `list-scripts --check`, which cross-checks the README's summary table
+# against what's actually on disk: a script with no table row, a row with no
+# script, a missing bash/Windows wrapper, a table link pointing at a section
+# that doesn't exist, rows out of alphabetical order, or a stray .py that looks
+# like a script but has neither wrapper nor row. Every one of those is easy to
+# do when adding a script and invisible until someone else trips over it.
+#
+# This checks the *working tree*, not the staged snapshot — the two only differ
+# if you're committing part of your changes, and in that case the working tree
+# is still the version you want to be consistent.
+#
+# Enable it once per clone (hooks aren't cloned, only their contents are):
+#     git config core.hooksPath hooks
+# Bypass it for one commit with `git commit --no-verify`.
+set -u
+
+root="$(git rev-parse --show-toplevel)"
+
+# The script is stdlib-only, so plain python3 runs it without uv's startup cost;
+# uv is the fallback for a machine that only has the wrapper's toolchain.
+if command -v python3 >/dev/null 2>&1; then
+    checker=(python3 "$root/list-scripts.py")
+elif command -v uv >/dev/null 2>&1; then
+    checker=(uv run "$root/list-scripts.py")
+else
+    echo "pre-commit: neither python3 nor uv found; skipping list-scripts --check" >&2
+    exit 0
+fi
+
+if ! output="$("${checker[@]}" --check 2>&1)"; then
+    echo "pre-commit: the script collection and README.md disagree:" >&2
+    echo >&2
+    echo "$output" >&2
+    echo >&2
+    echo "Fix the above (list-scripts --markdown regenerates the README table)," >&2
+    echo "or commit anyway with --no-verify." >&2
+    exit 1
+fi
