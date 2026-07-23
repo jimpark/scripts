@@ -23,6 +23,11 @@ and it should never be the reason unfinished work goes missing:
     to resolve it, rather than quietly rebasing or writing a merge commit.
   - Nothing is pushed, and no branch is ever switched.
 
+The one thing it configures is the repository's own hooks: git clones a
+repository's contents but never its hook *settings*, so hooks/pre-commit
+arrives inert on each new machine. When core.hooksPath isn't set to anything,
+this points it at hooks/ — and when it is set, leaves that choice alone.
+
 Updating the very script that is running is safe: Python reads the source
 fully before executing it, so replacing the file mid-run cannot affect the
 run in progress. The new version simply takes effect next time.
@@ -44,7 +49,12 @@ import os
 import subprocess
 import sys
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+# The repo's versioned hooks live here, relative to the working-tree root —
+# which is also where git runs hooks from, so core.hooksPath can stay relative
+# and keep working in every clone regardless of where it was cloned to.
+HOOKS_DIR = "hooks"
 
 
 def git(repo, *args):
@@ -94,6 +104,37 @@ def find_repo():
             "nothing to update from."
         )
     return out
+
+
+def configure_hooks(repo, say, dry_run=False):
+    """Enable the repo's own git hooks, once per clone.
+
+    Cloning brings hooks/pre-commit along but not the setting that makes git
+    run it, so on a fresh machine the hook sits there inert until someone
+    remembers a command they only ever type once. This script already runs on
+    every checkout worth updating, which makes it the natural place to do the
+    remembering.
+
+    It only ever fills in a blank. An existing core.hooksPath — in any config
+    scope, including a global one shared with every other repo — is a
+    deliberate choice, and quietly overriding it is not something an update
+    button should do. A failure here is reported but never fails the update:
+    the hooks are a convenience, and the commits they'd have checked are not
+    this run's business.
+    """
+    if not os.path.isdir(os.path.join(repo, HOOKS_DIR)):
+        return                      # a checkout from before the hooks existed
+    code, current, _ = git(repo, "config", "core.hooksPath")
+    if code == 0 and current:
+        return                      # already pointed somewhere; leave it be
+    if dry_run:
+        say(f"Would set core.hooksPath={HOOKS_DIR}, enabling {HOOKS_DIR}/pre-commit.")
+        return
+    code, _, err = git(repo, "config", "--local", "core.hooksPath", HOOKS_DIR)
+    if code != 0:
+        error(f"Warning: could not enable {HOOKS_DIR}/: {err}")
+        return
+    say(f"Enabled this repo's git hooks (core.hooksPath={HOOKS_DIR}).")
 
 
 def describe_status(entries):
@@ -213,6 +254,10 @@ def main():
     if behind == 0:
         extra = f" ({ahead} unpushed commit(s) of your own)" if ahead else ""
         print(f"Already up to date with {upstream}{extra}.")
+        # args.dry_run matters here too: this branch is reached *before* the
+        # dry-run report below, so a dry run of an up-to-date checkout would
+        # otherwise be the one code path that changes something.
+        configure_hooks(repo, say, dry_run=args.dry_run)
         restore()
         return 0
 
@@ -234,6 +279,7 @@ def main():
         if dirty:
             print(f"\n({len(dirty)} uncommitted change(s) would block this; "
                   "use --stash.)")
+        configure_hooks(repo, say, dry_run=True)
         return 0
 
     before = git_ok(repo, "rev-parse", "HEAD")
@@ -249,6 +295,10 @@ def main():
         changed = git_ok(repo, "diff", "--stat", f"{before}..HEAD")
         if changed:
             print(f"\n{changed}")
+
+    # After the fast-forward, not before: on the update that first brings
+    # hooks/ into an older checkout, there is nothing to point at until now.
+    configure_hooks(repo, say)
 
     failed = restore()
     say()  # blank line before the summary, but not when it is the only line

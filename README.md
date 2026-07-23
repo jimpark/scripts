@@ -2329,8 +2329,13 @@ list-scripts --markdown         # regenerate the table above
 
 `hooks/pre-commit` runs `--check` before every commit, so a script added
 without a README row — or a README row added without wrappers — is caught here
-rather than by whoever reads the table next. Git doesn't clone hooks, so enable
-it once per checkout:
+rather than by whoever reads the table next.
+
+Git clones a repository's contents but not its hook *settings*, so the hook
+arrives inert on each new machine. [`update-scripts`](#update-scriptspy) turns
+it on for you — it points `core.hooksPath` at `hooks/` whenever nothing else
+has claimed that setting — so a checkout gets the hook on its first update. To
+do it by hand, or in a checkout you haven't updated yet:
 
 ```sh
 git config core.hooksPath hooks
@@ -2435,6 +2440,13 @@ update-scripts --stash     # update even with local edits in progress
   the changes won't reapply, it says so, names the conflict, and leaves them in
   the stash — `git stash pop` recovers them. The exit status is `1` in that case
   even though the update itself succeeded.
+- **It enables the repo's git hooks**, which is the one thing it configures.
+  Cloning brings [`hooks/pre-commit`](#list-scriptspy) along but not the setting
+  that runs it, so this points `core.hooksPath` at `hooks/` — but *only* when
+  nothing has set it already. An existing value, in any config scope (a global
+  hooks directory, a path of your own), is a deliberate choice and is left
+  alone; so is a checkout too old to have a `hooks/` folder yet. A `--dry-run`
+  says what it would set and sets nothing.
 - **Updating the running script is safe.** Python reads the source fully before
   executing, so `update-scripts` replacing its own file mid-run can't affect the
   run in progress; the new version takes effect next time.
