@@ -2,7 +2,7 @@
 
 A small collection of standalone utility scripts. Each is self-contained — grab
 the one you need and run it. (A few exceptions ship with a companion file: keep
-it beside the script. [`git-switch.py`](#git-switchpy) and
+it beside the script. [`git-branch.py`](#git-branchpy) and
 [`delete-branch.py`](#delete-branchpy) share their TUI engine through a
 neighbouring `branch_tui.py` module; [`git-open.py`](#git-openpy),
 [`git-grep.py`](#git-greppy), and [`git-diff.py`](#git-diffpy) reuse that same
@@ -23,11 +23,11 @@ for each are below.
 | [`delete-branch.py`](#delete-branchpy) | Interactively check off Git branches (local and remote) — even whole folders — and delete them. |
 | [`docx-runs.py`](#docx-runspy) | Resolve and report the language of every text run in a `.docx`, with per-character script classification. |
 | [`git-batch.py`](#git-batchpy) | Run one git command across every git repo in the current directory and collate the results. |
+| [`git-branch.py`](#git-branchpy) | Interactive, vim-style Git branch manager: switch, delete, or rename branches in a collapsible folder tree with remotes. |
 | [`git-diff.py`](#git-diffpy) | Interactively browse `git diff` in a folder tree, search the changes, and open a changed line at its spot. |
 | [`git-grep.py`](#git-greppy) | Interactively `git grep`, browse the hits in a folder tree, and open one at its line in your editor. |
 | [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex or glob in a folder tree and open it in your editor. |
 | [`git-prune.py`](#git-prunepy) | Delete local Git branches that no longer exist on a remote. |
-| [`git-switch.py`](#git-switchpy) | Interactive, vim-style Git branch switcher with a collapsible folder tree and remote branches. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`inspect-nuget-package.py`](#inspect-nuget-packagepy) | List the .NET API symbols in a NuGet package, or check whether one exists. |
 | [`list-scripts.py`](#list-scriptspy) | Print this table in the terminal — find the script you need without opening the README. |
@@ -1547,11 +1547,12 @@ segmentation). The dependency is declared inline in the script, so the wrapper's
 
 ---
 
-## `git-switch.py`
+## `git-branch.py`
 
-A full-screen, **interactive Git branch switcher** in the spirit of `fzf` /
+A full-screen, **interactive Git branch manager** in the spirit of `fzf` /
 `lazygit`: it lists your branches, lets you home in on one three different ways,
-and checks it out. The picker is **modal**, like vim.
+and then **switches**, **deletes**, or **renames** it. The picker is **modal**,
+like vim.
 
 **NORMAL mode** (the default):
 
@@ -1563,14 +1564,17 @@ and checks it out. The picker is **modal**, like vim.
 | `l` / `→` | expand the folder (or descend into it) |
 | *digits* then `Enter` | select a branch by **number** (the cursor follows as you type, so `12⏎` lands on branch 12) |
 | `Enter` | expand/collapse a folder, or switch to a branch |
+| `D` | **delete** the branch under the cursor (asks first) |
+| `R` | **rename** the branch under the cursor (local only) |
 | `/` | enter FILTER mode |
 | `Tab` (or `r`) | toggle **remote** branches in / out of the list |
-| `q` / `Esc` | quit without switching |
+| `q` / `Esc` | quit without doing anything |
 
 **FILTER mode** (entered with `/`): type a **regular expression** that filters
 the branch names; `↑`/`↓` move among the matches, `Enter` switches to the
 highlighted branch, `Backspace` edits, `Esc` clears the filter and returns to
 NORMAL. (An invalid regex falls back to a literal match, flagged in the footer.)
+While a filter is open, letters like `D`/`R` are query text, not commands.
 
 Branch names are split on `/` into a collapsible **folder tree**, so
 `feature/login` and `feature/logout` tuck under a `feature/` folder. Folders
@@ -1583,18 +1587,26 @@ has no local counterpart **creates a local tracking branch and switches to it**
 (`git switch -c <name> --track <remote>/<name>`); if a local branch of that name
 already exists, it just switches to the local one.
 
+`Enter`, `D`, and `R` each act on a **single** branch: the picker closes first,
+then the action runs on the ordinary terminal so it can confirm the deletion or
+prompt for the new name. **Rename** takes the **full** name — `JP/foo/bar` can
+become `foo-bar` — via `git branch -m`, and works on local branches only.
+**Delete** is a single-branch shortcut (with the same unmerged-branch guard as
+below); to tick off and remove several branches at once, use
+[`delete-branch.py`](#delete-branchpy).
+
 ### Usage
 
 Run it from inside the repository:
 
 ```sh
-git-switch [options]
+git-branch [options]
 ```
 
 or invoke the script directly:
 
 ```sh
-python git-switch.py [options]
+python git-branch.py [options]
 ```
 
 | Option | Effect |
@@ -1602,23 +1614,30 @@ python git-switch.py [options]
 | `-r`, `--remotes` | Start with remote branches already included. |
 | `--no-color` | Disable colored output (also honors `NO_COLOR`). |
 
-Run `python git-switch.py --help` for the full key reference.
+Run `python git-branch.py --help` for the full key reference.
 
 ### Notes & caveats
 
-- **The current branch is marked `*`** and the cursor opens on it; selecting it
-  is a no-op. `git switch` handles the actual checkout, so an unclean working
-  tree that would be clobbered makes it refuse — its message is printed and the
-  tool exits non-zero, exactly as a manual `git switch` would.
+- **The current branch is marked `*`** and the cursor opens on it; switching to
+  it is a no-op, and it can't be deleted (`D` says so in the footer). `git
+  switch` handles the actual checkout, so an unclean working tree that would be
+  clobbered makes it refuse — its message is printed and the tool exits
+  non-zero, exactly as a manual `git switch` would.
+- **Delete** confirms with a `y/N` prompt before anything happens. A local
+  branch that isn't fully merged is refused by `git branch -d`; it then offers
+  to force it with `-D`. Deleting a **remote** branch (`git push <remote>
+  --delete`) updates the remote for everyone — it warns before doing so.
+- **Rename** is **local only** — pressing `R` on a remote row just notes that in
+  the footer and does nothing.
 - It draws on the **alternate screen** over `stderr` and reads keys in raw mode
   from `stdin`; both must be a terminal (piping in or out prints an error).
 - **No third-party dependencies** — the TUI is hand-rolled with raw terminal
   mode and ANSI escapes (no `curses`), so the one script runs on **macOS,
   Linux, and Windows** (Windows 10+ console, VT mode enabled automatically).
 
-Exit status: `0` a branch was switched, or you quit without choosing ·
-`1` not inside a Git repository, not an interactive terminal, or `git switch`
-failed.
+Exit status: `0` a branch was switched/deleted/renamed, or you quit without
+choosing · `1` not inside a Git repository, not an interactive terminal, or the
+underlying git command failed.
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies), Git on
 `PATH`, and the `branch_tui.py` module beside it (shared with `delete-branch.py`).
@@ -1627,10 +1646,10 @@ failed.
 
 ## `delete-branch.py`
 
-The same vim-style picker as [`git-switch.py`](#git-switchpy), but instead
+The same vim-style picker as [`git-branch.py`](#git-branchpy), but instead
 of switching you **check off** as many branches as you like — local *and*
 remote, or whole folders — and delete them in one pass. It shares its entire
-navigation engine with `git-switch.py` (the folder tree, regex filter,
+navigation engine with `git-branch.py` (the folder tree, regex filter,
 remotes toggle, and all the keys behave identically).
 
 The differences are the checkboxes and what `Enter` does:
@@ -1638,13 +1657,13 @@ The differences are the checkboxes and what `Enter` does:
 | Key | Action |
 | --- | ------ |
 | `Space` | check / uncheck the branch — or the **whole folder** — under the cursor |
-| `Enter` | same meaning as in `git-switch.py`: expand/collapse a folder, or check/uncheck a branch — it **never deletes** |
+| `Enter` | same meaning as in `git-branch.py`: expand/collapse a folder, or check/uncheck a branch — it **never deletes** |
 | `d` | delete everything that's checked (after a confirmation) |
 | `F` | toggle **force**: `git branch -D` instead of the safe `-d` |
 | *digits* | jump the cursor to a branch by **number** (then `Space`/`Enter` to check it) |
-| `j`/`k`, `g`/`G`, `h`/`l`, `/`, `Tab`, `q` | move, fold, filter, toggle remotes, quit — exactly as in `git-switch.py` |
+| `j`/`k`, `g`/`G`, `h`/`l`, `/`, `Tab`, `q` | move, fold, filter, toggle remotes, quit — exactly as in `git-branch.py` |
 
-`Enter` deliberately keeps its `git-switch.py` meaning so muscle memory never
+`Enter` deliberately keeps its `git-branch.py` meaning so muscle memory never
 triggers a delete; deletion lives on its own key, `d`. (While you're typing a
 filter, `d` is part of the expression — press `Esc` first, then `d`; your checks
 are kept.)
@@ -1696,7 +1715,7 @@ branches), or you quit / aborted without deleting · `1` not inside a Git
 repository, not an interactive terminal, or a deletion failed unexpectedly.
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies), Git on
-`PATH`, and the `branch_tui.py` module beside it (shared with `git-switch.py`).
+`PATH`, and the `branch_tui.py` module beside it (shared with `git-branch.py`).
 
 ---
 
@@ -2262,7 +2281,7 @@ list-scripts git      # just the git tools
 
 Terms are matched against **both the name and the summary** and are ANDed
 together, so `list-scripts git branch` finds the branch tools, and a search for
-`branch` turns up `git-switch` even though its name doesn't contain the word.
+`switch` turns up `git-branch` even though its name doesn't contain the word.
 
 ### Where the summaries come from
 

@@ -259,7 +259,7 @@ def discover(directory, readme_summaries):
 def matches(script, terms, use_regex):
     """True if the script satisfies every search term (AND, case-insensitive).
 
-    Both the name and the summary are searched, so "branch" finds git-switch
+    Both the name and the summary are searched, so "switch" finds git-branch
     even though its name doesn't contain the word.
     """
     haystack = f"{script.name} {script.summary}".lower()

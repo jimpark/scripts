@@ -1,11 +1,11 @@
 ---
 name: verify
-description: How to run and drive this repo's TUI scripts (git-grep, git-diff, git-open, git-switch, delete-branch) for end-to-end verification.
+description: How to run and drive this repo's TUI scripts (git-grep, git-diff, git-open, git-branch, delete-branch) for end-to-end verification.
 ---
 
 # Verifying the TUI scripts
 
-The interactive scripts (git-grep.py, git-diff.py, git-open.py, git-switch.py,
+The interactive scripts (git-grep.py, git-diff.py, git-open.py, git-branch.py,
 delete-branch.py) are raw-mode ANSI TUIs on stderr — they refuse to start
 without a tty, so drive them through a pty (no tmux on this machine):
 
@@ -34,8 +34,9 @@ Key facts that make captures easy:
   `os.write` yields ONE repaint reflecting the final state — expected, not
   a bug. Ctrl-L forces a full repaint.
 - Safe keys: j/k/g/G/n/p, arrows, `/pattern\r` (filter), `q` quits.
-  AVOID Enter in git-switch/delete-branch (switches/deletes branches!) and
-  Enter on a match row in git-grep/git-diff/git-open (spawns the editor).
+  AVOID Enter in git-branch/delete-branch (switches/deletes branches!), the
+  `D`/`R` keys in git-branch (delete / rename), and Enter on a match row in
+  git-grep/git-diff/git-open (spawns the editor).
 - Exit status 0 on `q`; scripts print notices after leaving the alt screen.
 
 Non-TUI surfaces: git-prune.py and the others are plain CLIs; run them with
