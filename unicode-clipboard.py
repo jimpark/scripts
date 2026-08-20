@@ -12,6 +12,13 @@ Each codepoint may be written in any of these forms (case-insensitive):
     0x<hex>     e.g. 0x1F600          &#<dec>;    e.g. &#233;  (HTML decimal)
                                       &#x<hex>;   e.g. &#xE9;  (HTML hex)
 
+A token in none of those forms is looked up as a Unicode character name or
+alias (case-insensitive). That gives the untypeable controls a short spelling,
+because the abbreviations from Unicode's NameAliases.txt count as aliases:
+
+    unicode-clipboard.py LRI PDI             copies U+2066 U+2069
+    unicode-clipboard.py BULLET              copies U+2022
+
 Multiple codepoints are concatenated, in order, into a single string. So
 
     unicode-clipboard.py U+0048 U+0069       copies "Hi"
@@ -22,10 +29,10 @@ decoded like a C/C++ string literal, then copied:
     unicode-clipboard.py -s "Hello\\u002c World\\u0021"   copies "Hello, World!"
 
 Recognised escapes are the Unicode escapes \\uXXXX (exactly 4 hex digits) and
-\\UXXXXXXXX (exactly 8 hex digits), \\N{NAME} (by Unicode name, e.g.
-\\N{BULLET}), \\xH... (hex), \\ooo (1-3 octal digits), and the single-character
-escapes \\a \\b \\f \\n \\r \\t \\v \\\\ \\' \\" \\?. Any other escape is an
-error. Everything that isn't an escape is taken literally.
+\\UXXXXXXXX (exactly 8 hex digits), \\N{NAME} (by Unicode name or alias, e.g.
+\\N{BULLET} or \\N{LRI}), \\xH... (hex), \\ooo (1-3 octal digits), and the
+single-character escapes \\a \\b \\f \\n \\r \\t \\v \\\\ \\' \\" \\?. Any other
+escape is an error. Everything that isn't an escape is taken literally.
 
 If the value is missing in either mode — no codepoints, or -s with no string —
 it is read from stdin (codepoint mode splits stdin on whitespace; string mode
@@ -50,7 +57,7 @@ import subprocess
 import sys
 import unicodedata
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 MAX_CODEPOINT = 0x10FFFF
 SURROGATE_RANGE = (0xD800, 0xDFFF)
@@ -78,6 +85,27 @@ def codepoint_fault(value):
     return None
 
 
+def lookup_name(text):
+    """Return the codepoint named by `text`, or None if it names nothing.
+
+    `unicodedata.lookup` accepts the short aliases from NameAliases.txt as
+    well as full names, which is what makes LRI/RLI/FSI/PDI (and LRM, ZWJ,
+    NBSP, ...) writable without looking their hex up.
+    """
+    try:
+        char = unicodedata.lookup(text.upper())
+    except KeyError:
+        return None
+    if len(char) != 1:
+        # A named sequence, which is more than one codepoint: --string can
+        # still copy it, but a single codepoint token can't be one.
+        raise argparse.ArgumentTypeError(
+            "'{0}' names a sequence of {1} characters; copy it with "
+            "-s '\\N{{{0}}}'".format(text, len(char))
+        )
+    return ord(char)
+
+
 def parse_codepoint(arg):
     """Return the int codepoint for a single token, or raise on bad input."""
     text = arg.strip()
@@ -88,9 +116,14 @@ def parse_codepoint(arg):
             value = int(match.group(1), base)
             break
     if value is None:
+        # Names are tried last, so a token that reads as both a number and a
+        # name (CCH is <hex>h as well as an alias for U+0094) stays a number.
+        value = lookup_name(text)
+    if value is None:
         raise argparse.ArgumentTypeError(
             "unrecognised codepoint '{0}'; use U+<hex>, <hex>h, 0x<hex>, "
-            "\\u<hex>, &#<dec>; or &#x<hex>;".format(arg)
+            "\\u<hex>, &#<dec>;, &#x<hex>; or a Unicode name or alias "
+            "(e.g. LRI, BULLET)".format(arg)
         )
     fault = codepoint_fault(value)
     if fault:
@@ -161,7 +194,7 @@ def decode_escapes(text):
                 raise EscapeError("unterminated \\N{...} escape")
             name = text[i + 2:end]
             try:
-                out.append(unicodedata.lookup(name))
+                out.append(unicodedata.lookup(name.upper()))
             except KeyError:
                 raise EscapeError(
                     "unknown character name in \\N{{{0}}}".format(name)
@@ -317,19 +350,29 @@ def parse_args(argv):
             "  \\U<hex>     e.g. \\U0001F600 (8 hex digits)\n"
             "  &#<dec>;    e.g. &#233;   (HTML decimal entity)\n"
             "  &#x<hex>;   e.g. &#xE9;   (HTML hex entity)\n"
+            "  <name>      e.g. BULLET, LRI, 'LEFT-TO-RIGHT ISOLATE'\n"
+            "              any Unicode name or NameAliases.txt abbreviation;\n"
+            "              tried only after the numeric forms above\n"
+            "\n"
+            "bidi controls, by alias:\n"
+            "  LRI U+2066   RLI U+2067   FSI U+2068   PDI U+2069\n"
+            "  LRM U+200E   RLM U+200F   ALM U+061C\n"
+            "  LRE U+202A   RLE U+202B   PDF U+202C   LRO U+202D   RLO U+202E\n"
             "\n"
             "--string escapes (decoded like a Python/C++ string literal):\n"
             "  \\uXXXX      4 hex digits      \\xH...      hex (1+ digits)\n"
             "  \\UXXXXXXXX  8 hex digits      \\ooo        octal (1-3 digits)\n"
-            "  \\N{NAME}    by Unicode name (e.g. \\N{BULLET}, \\N{SNOWMAN})\n"
+            "  \\N{NAME}    by Unicode name or alias (e.g. \\N{BULLET}, \\N{LRI})\n"
             "  \\a \\b \\f \\n \\r \\t \\v \\\\ \\' \\\" \\?   single-character escapes\n"
             "\n"
             "examples:\n"
             "  unicode-clipboard.py U+1F600          # copy a grinning face\n"
             "  unicode-clipboard.py U+0048 U+0069    # copy \"Hi\"\n"
             "  unicode-clipboard.py 00e9h            # copy e-acute\n"
+            "  unicode-clipboard.py LRI PDI          # copy the bidi isolates\n"
             "  echo 'U+2603 U+FE0F' | unicode-clipboard.py   # codepoints via stdin\n"
             "  unicode-clipboard.py -s 'Hello\\u002c World\\u0021'  # copy \"Hello, World!\"\n"
+            "  unicode-clipboard.py -s '\\N{LRI}John 3:16\\N{PDI}'   # isolate a citation\n"
             "  echo 'caf\\u00e9' | unicode-clipboard.py -s          # string via stdin\n"
         ),
     )
@@ -337,7 +380,8 @@ def parse_args(argv):
         "codepoints",
         nargs="*",
         metavar="CODEPOINT",
-        help="one or more codepoints; if omitted, read from stdin",
+        help="one or more codepoints or Unicode names; if omitted, read "
+             "from stdin",
     )
     parser.add_argument(
         "-s", "--string",
@@ -346,7 +390,8 @@ def parse_args(argv):
         default=None,
         metavar="STRING",
         help="copy STRING, decoding embedded C/C++-style escapes "
-             "(\\uXXXX, \\n, ...); with no STRING, read it from stdin",
+             "(\\uXXXX, \\N{LRI}, \\n, ...); with no STRING, read it from "
+             "stdin",
     )
     parser.add_argument(
         "-q", "--quiet",

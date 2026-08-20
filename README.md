@@ -34,7 +34,7 @@ for each are below.
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
 | [`script-runs.py`](#script-runspy) | Extract embedded runs of one Unicode script (with their neutral glue) from mixed-script text. |
-| [`unicode-clipboard.py`](#unicode-clipboardpy) | Copy Unicode characters to the clipboard by codepoint, so you can paste the untypeable. |
+| [`unicode-clipboard.py`](#unicode-clipboardpy) | Copy Unicode characters to the clipboard by codepoint or name, so you can paste the untypeable. |
 | [`unicode-info.py`](#unicode-infopy) | Fetch and display Unicode character information for a codepoint. |
 | [`update-scripts.py`](#update-scriptspy) | Update these scripts in place by fast-forwarding the checkout they live in. |
 
@@ -966,6 +966,7 @@ Each codepoint may be written in any of these case-insensitive forms:
 | `\U<hex>`   | `\U0001F600`   | 8 hex digits              |
 | `&#<dec>;`  | `&#233;`       | HTML decimal entity       |
 | `&#x<hex>;` | `&#xE9;`       | HTML hex entity           |
+| `<name>`    | `BULLET`       | any Unicode name or alias |
 
 Multiple codepoints are concatenated, in order, into a single string.
 
@@ -982,7 +983,7 @@ are decoded like a **Python or C/C++ string literal**, then copied. So
 | ------------ | ---------------------------------------- |
 | `\uXXXX`     | Unicode codepoint, exactly 4 hex digits  |
 | `\UXXXXXXXX` | Unicode codepoint, exactly 8 hex digits  |
-| `\N{NAME}`   | by Unicode name, e.g. `\N{BULLET}` (also named sequences) |
+| `\N{NAME}`   | by Unicode name or alias, e.g. `\N{BULLET}`, `\N{LRI}` (also named sequences) |
 | `\xH...`     | hex escape, one or more hex digits       |
 | `\ooo`       | octal escape, 1–3 octal digits           |
 | `\a \b \f \n \r \t \v` | bell, backspace, form-feed, newline, carriage-return, tab, vertical-tab |
@@ -994,6 +995,32 @@ dangling backslash) is an error.
 In **either** mode, if the value is omitted the input is read from **stdin** —
 codepoint mode splits stdin on whitespace, string mode reads it whole (minus a
 single trailing newline).
+
+### Characters by name
+
+A token that matches none of the numeric forms is looked up as a **Unicode
+character name or alias** — case-insensitive, so `LRI`, `lri`, and
+`'LEFT-TO-RIGHT ISOLATE'` are the same character. Aliases include the short
+abbreviations from Unicode's `NameAliases.txt`, which is what gives the
+invisible **bidi controls** a spelling you can actually remember:
+
+| Alias | Codepoint | Name |
+| ----- | --------- | ---- |
+| `LRI` | `U+2066` | left-to-right isolate |
+| `RLI` | `U+2067` | right-to-left isolate |
+| `FSI` | `U+2068` | first strong isolate |
+| `PDI` | `U+2069` | pop directional isolate |
+| `LRM` `RLM` `ALM` | `U+200E` `U+200F` `U+061C` | directional marks |
+| `LRE` `RLE` `LRO` `RLO` `PDF` | `U+202A`–`U+202E` | legacy embeddings and overrides |
+| `ZWJ` `ZWNJ` `ZWSP` `WJ` `NBSP` `SHY` `BOM` | — | other invisibles |
+
+So `unicode-clipboard LRI PDI` copies the isolate pair, and
+`unicode-clipboard -s '\N{LRI}John 3:16\N{PDI}'` wraps text in one. The numeric
+forms are tried **first**, so a token that reads as both a number and a name
+(`CCH` is `<hex>h` as well as an alias for `U+0094`) is taken as the number;
+write the full name if you meant the character. A name that refers to a *named
+sequence* of several codepoints can't be a codepoint token — use `-s` with
+`\N{NAME}` for those.
 
 ### Usage
 
@@ -1022,6 +1049,9 @@ python unicode-clipboard.py U+0048 U+0069
 # mix forms; copy é, a snowman, and the letter A
 python unicode-clipboard.py 00e9h 0x2603 U+0041
 
+# by name or alias; copy the left-to-right isolate and its terminator
+python unicode-clipboard.py LRI PDI
+
 # read a list from stdin, quietly
 echo 'U+2603 U+FE0F' | python unicode-clipboard.py -q
 
@@ -1033,6 +1063,9 @@ python unicode-clipboard.py -s 'tab\there \U0001F389'
 
 # string mode using Unicode names
 python unicode-clipboard.py -s 'caution \N{SNOWMAN} ahead'
+
+# string mode wrapping a citation in a bidi isolate
+python unicode-clipboard.py -s '\N{LRI}John 3:16\N{PDI}'
 
 # string mode reading the string from stdin (trailing newline is dropped)
 echo 'café' | python unicode-clipboard.py -s
