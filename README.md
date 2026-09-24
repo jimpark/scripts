@@ -13,6 +13,7 @@ for each are below.
 
 | Script | What it does |
 | ------ | ------------ |
+| [`ado-open.py`](#ado-openpy) | Open an Azure DevOps work item or pull request in the browser by its number. |
 | [`backport.py`](#backportpy) | Cherry-pick one author's commits from a source branch onto a target branch. |
 | [`baseconv.py`](#baseconvpy) | Convert a value between binary, decimal, octal, hex, and base64. |
 | [`bedrock-copilot.py`](#bedrock-copilotpy) | Launch the GitHub Copilot CLI against a model on AWS Bedrock, with model + effort pickers. |
@@ -2512,3 +2513,89 @@ or missing arguments).
 
 **Requirements:** Python 3.6+ (standard library only; no dependencies) and Git
 on `PATH`.
+
+---
+
+## `ado-open.py`
+
+Opens an **Azure DevOps work item or pull request** by its number. It looks the
+number up with the `az` CLI, prints the item's type, title, state, and URL, and
+opens the URL in your default browser.
+
+A work item URL needs only the ID, but a pull request URL needs the repository
+name, which the PR number alone doesn't give you. `az repos pr show` finds the
+repository. `az` also confirms the item exists before anything opens.
+
+### Usage
+
+```sh
+ado-open [options] ID [ID ...]
+```
+
+or invoke the script directly:
+
+```sh
+python ado-open.py [options] ID [ID ...]
+```
+
+Each `ID` takes one of these forms:
+
+| Form | Meaning |
+| ---- | ------- |
+| `#1234` | Work item: bug, PBI, task, or any other type. |
+| `!1234` | Pull request. |
+| `wi 1234` | Work item. `bug` and `pbi` are aliases for `wi`. |
+| `pr 1234` | Pull request. |
+| `1234` | Either. Opens whichever exists. If both exist, lists both and opens neither. |
+
+| Option | Effect |
+| ------ | ------ |
+| `-n`, `--print` | Print the URLs without opening the browser. |
+| `-V`, `--version` | Print the version and exit. |
+
+```sh
+ado-open '#645265'            # open a work item
+ado-open pr 176642            # open a pull request
+ado-open -n bug 645265        # print the URL only
+ado-open '#645265' '!176642'  # open several at once
+ado-open -n '!176642' | clip  # copy just the URL
+```
+
+### Configuration
+
+The project URL is `base_url` in the `[ado]` section of `ado-open.ini`, beside
+the script. The file is gitignored. The first run creates it:
+
+```ini
+[ado]
+base_url = https://dev.azure.com/whqmeps/MEPS
+```
+
+`az` queries the organization part of that URL. The URL the script prints uses
+the item's own project, so an item from another project in the same
+organization still resolves.
+
+### Notes & caveats
+
+- **Quote `#` and `!` in bash and PowerShell.** Both shells read `#1234` after a
+  space as a comment, so the script receives no argument. Interactive bash also
+  expands `!1234` from its history. Write `'#1234'` and `'!1234'`, or use the
+  word forms `wi 1234` and `pr 1234`. cmd.exe passes both prefixes through
+  unquoted.
+- **A bare number queries both kinds.** Work item and pull request IDs share one
+  number range, so `1234` can be both. When it is, the script lists both and
+  exits `1`. Rerun with a prefix to pick one.
+- Lookups for several IDs run in parallel. Each `az` call takes a second or two.
+- When stdout is a terminal, each item prints as a title line with the URL
+  below it. When stdout is piped, only the URLs print, one per line. Errors
+  and the ambiguous-number listing go to stderr.
+- `az` must be logged in (`az login`) with the `azure-devops` extension
+  installed. Any `az` error other than "not found" stops the run and prints the
+  `az` message.
+
+Exit status: `0` every ID resolved · `1` an ID was not found or was ambiguous,
+`az` failed, or the config file is invalid · `2` usage error (bad or missing
+arguments).
+
+**Requirements:** Python 3.9+ (standard library only; no dependencies) and the
+`az` CLI with the `azure-devops` extension on `PATH`.
