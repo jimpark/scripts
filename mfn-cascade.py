@@ -9,6 +9,8 @@ of that change and the state of its pipeline:
     mfn-cascade toolchain 1.46.1
     mfn-cascade tcu 1.48.1
     mfn-cascade mfn-lib-core@3.20.5
+    mfn-cascade toolchain 1.46       # the newest 1.46.x build
+    mfn-cascade toolchain latest     # the newest build on master
 
 HOW IT WORKS
 ------------
@@ -37,12 +39,14 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import textwrap
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 
 DEFAULT_HOST = "gitlab.whqmeps.org"
 DEFAULT_GROUP = "meps-foundation"
@@ -115,15 +119,16 @@ class GitLab:
         data = self.get_json(f"{self.project_path(project)}/repository/branches/{quoted}")
         return data["commit"]
 
-    def mmpackage_commits(self, project, branch, since=None):
-        """Commits on branch that changed mmpackage.json, oldest first."""
+    def mmpackage_commits(self, project, branch, since=None, first_page=False):
+        """Commits on branch that changed mmpackage.json, oldest first.
+
+        With first_page, only the newest 100 such commits.
+        """
         query = {"ref_name": branch, "path": MMPACKAGE, "per_page": 100}
         if since:
             query["since"] = since
-        commits = self.get(
-            f"{self.project_path(project)}/repository/commits?{urllib.parse.urlencode(query)}",
-            paginate=True,
-        )
+        path = f"{self.project_path(project)}/repository/commits?{urllib.parse.urlencode(query)}"
+        commits = self.get_json(path) if first_page else self.get(path, paginate=True)
         return list(reversed(commits))
 
     def downstreams(self, project, ref):
@@ -169,19 +174,21 @@ class PipelineSummary:
     def published(self):
         return any(j["name"] == PUBLISH_JOB and j["status"] == "success" for j in self.jobs)
 
-    def describe(self):
-        done = sum(1 for j in self.jobs if j["status"] in ("success", "skipped"))
-        text = self.status
-        if not self.jobs:
-            return text
-        if self.status != "success":
-            text += f", {done}/{len(self.jobs)} jobs done"
-        text += ", published" if self.published else ", not published"
-        for state in ("failed", "running", "pending"):
-            names = [j["name"] for j in self.jobs if j["status"] == state]
-            if names:
-                text += f"; {state}: {', '.join(names)}"
-        return text
+    @property
+    def running(self):
+        return self.status in ("created", "pending", "preparing", "running",
+                               "scheduled", "waiting_for_resource")
+
+    @property
+    def clean(self):
+        return self.status == "success" and self.published
+
+    def jobs_in(self, *states):
+        return [j["name"] for j in self.jobs if j["status"] in states]
+
+    def progress(self):
+        done = len(self.jobs_in("success", "skipped"))
+        return f"{done}/{len(self.jobs)} jobs done"
 
 
 class Node:
@@ -193,6 +200,7 @@ class Node:
         self.package = None
         self.detail = ""
         self.pipeline = None
+        self.upstream = None
         self.children = []
         self.error = None
 
@@ -254,31 +262,57 @@ def short_name(project):
     return project.rsplit("/", 1)[-1]
 
 
-def find_version_commit(gitlab, project, branch, version):
-    for commit in reversed(gitlab.mmpackage_commits(project, branch)):
-        match = VERSION_SET_RE.search(commit["title"])
-        if match and match.group(1) == version:
-            return commit
-    return None
+def set_version(commit):
+    """The version a commit sets in mmpackage.json, read from its message, or None."""
+    match = VERSION_SET_RE.search(commit["title"])
+    return match.group(1) if match else None
 
 
-def locate_start(gitlab, project, version, branch):
-    if branch:
+def find_version_commit(gitlab, project, branch, version=None):
+    """The commit that set version on branch, or with version None, the newest one.
+
+    Returns (version, commit), or (None, None). The newest 100 commits answer most
+    lookups, so the full history is read only when they do not.
+    """
+    for first_page in (True, False):
+        commits = gitlab.mmpackage_commits(project, branch, first_page=first_page)
+        for commit in reversed(commits):
+            found = set_version(commit)
+            if found and (version is None or found == version):
+                return found, commit
+        if len(commits) < 100:
+            break
+    return None, None
+
+
+def locate_start(gitlab, project, spec, branch):
+    """Resolve a version spec to (branch, version, commit), or (None, None, None).
+
+    spec is "latest" (the newest version on master), "X.Y" (the newest version on
+    release-X.Y, or on master while master builds X.Y), or an exact "X.Y.Z".
+    """
+    if spec == "latest":
+        candidates = [branch or "master"]
+    elif branch:
         candidates = [branch]
     else:
-        major_minor = ".".join(version.split(".")[:2])
-        candidates = [f"release-{major_minor}", "master"]
+        candidates = [f"release-{'.'.join(spec.split('.')[:2])}", "master"]
+    exact = spec if spec.count(".") >= 2 else None
     for candidate in candidates:
         if not gitlab.branch_exists(project, candidate):
             continue
-        commit = find_version_commit(gitlab, project, candidate, version)
-        if commit:
-            return candidate, commit
-    return None, None
+        version, commit = find_version_commit(gitlab, project, candidate, exact)
+        if commit is None:
+            continue
+        if exact is None and spec != "latest" and not version.startswith(spec + "."):
+            continue
+        return candidate, version, commit
+    return None, None, None
 
 
 def trace_downstream(gitlab, node, upstream_package, upstream_version, since):
     """Find the first version of node that requires upstream_package >= upstream_version."""
+    node.upstream = upstream_package
     head_mm = gitlab.mmpackage(node.project, node.branch)
     if head_mm is None:
         node.state = NO_PACKAGE
@@ -326,14 +360,14 @@ def trace_downstream(gitlab, node, upstream_package, upstream_version, since):
     if arrived is not None:
         node.state = PENDING_BUMP
         node.detail = (f"requires {upstream_package}@{head_mm['deps'][upstream_package]} "
-                       f"since {arrived['short_id']}, version not bumped yet")
+                       f"since {arrived['short_id']}; version not bumped yet")
     elif at_least(head_mm["deps"].get(upstream_package), upstream_version):
         # The branch was created after the change and has not changed mmpackage.json since.
         node.state = FIXED
         node.detail = f"requires {upstream_package}@{head_mm['deps'][upstream_package]}"
     else:
         node.state = NOT_YET
-        node.detail = (f"latest {head_mm['version']} requires "
+        node.detail = (f"latest is {head_mm['version']}, which requires "
                        f"{upstream_package}@{head_mm['deps'][upstream_package]}")
 
 
@@ -359,63 +393,119 @@ def build_tree(gitlab, node, since):
 
 
 class Painter:
-    COLORS = {FIXED: "32", PENDING_BUMP: "33", NOT_YET: "33", WAITING: "2",
-              UNPINNED: "35", NO_PACKAGE: "2", "error": "31"}
+    CODES = {"green": "32", "yellow": "33", "red": "31", "magenta": "35", "dim": "2", "bold": "1"}
 
     def __init__(self, color):
         self.color = color
 
-    def paint(self, text, state):
-        code = self.COLORS.get(state)
-        if not self.color or not code:
+    def __call__(self, text, style):
+        if not self.color or style not in self.CODES:
             return text
-        return f"\x1b[{code}m{text}\x1b[0m"
+        return f"\x1b[{self.CODES[style]}m{text}\x1b[0m"
 
 
-def flatten(node, prefix="", last=True, root=True, rows=None):
+def flatten(node, lead="", rest="", rows=None):
+    """Rows of (first-line prefix, detail-line prefix, node) in tree order.
+
+    The detail prefix continues the tree's vertical bars past a node's own lines.
+    """
     rows = [] if rows is None else rows
-    branch = "" if root else ("└── " if last else "├── ")
-    rows.append((prefix + branch, node))
-    child_prefix = prefix + ("" if root else ("    " if last else "│   "))
+    rows.append((lead, rest + ("│  " if node.children else "   "), node))
     for index, child in enumerate(node.children):
-        flatten(child, child_prefix, index == len(node.children) - 1, False, rows)
+        last = index == len(node.children) - 1
+        flatten(child, rest + ("└─ " if last else "├─ "), rest + ("   " if last else "│  "), rows)
     return rows
 
 
-STATE_LABELS = {PENDING_BUMP: "pending", NOT_YET: "not yet", WAITING: "waiting",
-                UNPINNED: "unknown", NO_PACKAGE: "unknown"}
+def headline(node):
+    """The status word for a node's first line, and its color."""
+    if node.error:
+        return "error", "red"
+    if node.state == WAITING:
+        return f"waiting on {node.upstream}", "dim"
+    if node.state in (UNPINNED, NO_PACKAGE):
+        return "unknown", "magenta"
+    if node.state == PENDING_BUMP:
+        return "pending", "yellow"
+    if node.state == NOT_YET:
+        return "not yet", "yellow"
+    build = node.pipeline
+    if build is None:
+        return "no pipeline", "magenta"
+    if build.clean:
+        return "published", "green"
+    if build.running:
+        return f"building, {build.progress()}", "yellow"
+    if build.status == "success":
+        return "built, not published", "yellow"
+    return build.status, "red"
 
 
-def status_text(node):
-    if node.state == FIXED:
-        build = node.pipeline.describe() if node.pipeline else "no pipeline found"
-        return f"{build}; {node.detail}" if node.detail else build
-    text = f"{STATE_LABELS[node.state]}: {node.detail}"
-    if node.pipeline:
-        text += f"; head build {node.pipeline.describe()}"
-    return text
+JOB_NAME_LIMIT = 4
 
 
-def render(root, painter, show_urls):
-    rows = flatten(root)
-    name_width = max(len(lead) + len(short_name(n.project)) for lead, n in rows)
-    branch_width = max(len(n.branch) for _, n in rows)
-    version_width = max(len(n.version if n.state == FIXED else "-") for _, n in rows)
+def job_list(names, verbose):
+    if verbose or len(names) <= JOB_NAME_LIMIT:
+        return ", ".join(names)
+    return f"{', '.join(names[:JOB_NAME_LIMIT])}, and {len(names) - JOB_NAME_LIMIT} more"
+
+
+def detail_lines(node, show_urls, verbose):
+    """Lines printed under a node: why it has that state, and what its build is doing.
+
+    Up to JOB_NAME_LIMIT failed jobs show. Running jobs show when there are few of them,
+    and queued jobs only with --verbose; the job count on the status line covers the rest.
+    """
+    if node.error:
+        return [node.error]
     lines = []
-    for lead, node in rows:
-        name = (lead + short_name(node.project)).ljust(name_width)
-        if node.error:
-            lines.append(f"{name}  {node.branch.ljust(branch_width)}  "
-                         + painter.paint(f"error: {node.error}", "error"))
-            continue
+    if node.detail and (node.state != FIXED or verbose) and node.state != WAITING:
+        lines.append(node.detail)
+    build = node.pipeline
+    if build is None or (build.clean and not verbose):
+        return lines
+    failed = build.jobs_in("failed")
+    running = build.jobs_in("running")
+    if node.state == FIXED:
+        if failed:
+            lines.append(f"failed: {job_list(failed, verbose)}")
+    else:
+        text = "head build published" if build.clean else f"head build {build.status}"
+        if build.jobs and not build.clean:
+            text += f", {build.progress()}"
+        if failed:
+            text += f"; failed: {job_list(failed, verbose)}"
+        lines.append(text)
+    if running and (verbose or (node.state == FIXED and len(running) <= 3)):
+        lines.append(f"running: {', '.join(running)}")
+    queued = build.jobs_in("pending", "created")
+    if verbose and queued:
+        lines.append(f"queued: {', '.join(queued)}")
+    if show_urls and not build.clean:
+        lines.append(build.url)
+    return lines
+
+
+def render(root, paint, show_urls, verbose, width):
+    rows = flatten(root)
+    name_width = max(len(lead) + len(short_name(n.project)) for lead, _, n in rows)
+    branch_width = max(len(n.branch) for _, _, n in rows)
+    version_width = max(len(n.version if n.state == FIXED else "-") for _, _, n in rows)
+    out = []
+    for lead, rest, node in rows:
         version = node.version if node.state == FIXED else "-"
-        text = status_text(node)
-        lines.append(f"{name}  {node.branch.ljust(branch_width)}  "
-                     f"{version.ljust(version_width)}  {painter.paint(text, node.state)}")
-        if show_urls and node.pipeline and node.pipeline.status != "success":
-            pad = " " * (name_width + branch_width + version_width + 6)
-            lines.append(pad + node.pipeline.url)
-    return "\n".join(lines)
+        word, style = headline(node)
+        out.append(f"{lead}{paint(short_name(node.project), 'bold')}"
+                   f"{' ' * (name_width - len(lead) - len(short_name(node.project)))}  "
+                   f"{paint(node.branch.ljust(branch_width), 'dim')}  "
+                   f"{version.ljust(version_width)}  {paint(word, style)}")
+        indent = rest
+        for line in detail_lines(node, show_urls, verbose):
+            wrapped = textwrap.wrap(line, max(width - len(indent), 30), subsequent_indent="  ",
+                                    break_on_hyphens=False, break_long_words=False) or [""]
+            out.extend(paint(indent + piece, "dim") if piece.startswith("http")
+                       else indent + piece for piece in wrapped)
+    return "\n".join(out)
 
 
 def parse_args(argv):
@@ -426,17 +516,24 @@ def parse_args(argv):
         epilog="examples:\n"
                "  mfn-cascade toolchain 1.46.1\n"
                "  mfn-cascade tcu@1.48.1\n"
+               "  mfn-cascade toolchain 1.46       # newest 1.46.x build\n"
+               "  mfn-cascade toolchain latest     # newest build on master\n"
                "  mfn-cascade -b master mfn-lib-core 3.21.23\n",
     )
     parser.add_argument("project", help="project name: toolchain, tcu, mfn-lib-core, or group/path")
-    parser.add_argument("version", nargs="?", help="version that carries the change")
+    parser.add_argument("version", nargs="?",
+                        help="version that carries the change: X.Y.Z exactly, X.Y for the newest "
+                             "X.Y build, or latest for the newest build on master")
     parser.add_argument("-b", "--branch",
-                        help="branch that built VERSION (default: release-X.Y, then master)")
+                        help="branch that built VERSION (default: release-X.Y, then master; "
+                             "master for latest)")
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"GitLab host (default: {DEFAULT_HOST})")
     parser.add_argument("--group", default=DEFAULT_GROUP,
                         help=f"group for bare project names (default: {DEFAULT_GROUP})")
     parser.add_argument("--no-urls", action="store_true",
                         help="omit pipeline URLs for builds that have not succeeded")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="also show each version's upstream requirement and clean builds' jobs")
     parser.add_argument("--no-color", action="store_true", help="disable color")
     parser.add_argument("-V", "--version-info", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args(argv)
@@ -444,7 +541,7 @@ def parse_args(argv):
         if "@" not in args.project:
             parser.error("give a VERSION, or write PROJECT@VERSION")
         args.project, args.version = args.project.rsplit("@", 1)
-    if not re.fullmatch(r"\d+(\.\d+)*", args.version):
+    if args.version != "latest" and not re.fullmatch(r"\d+(\.\d+)+", args.version):
         parser.error(f"not a version: {args.version}")
     return args
 
@@ -453,18 +550,25 @@ def main(argv=None):
     args = parse_args(argv)
     gitlab = GitLab(args.host)
     project = resolve_project(args.project, args.group)
-    if sys.stderr.isatty():
-        print(f"Tracing {short_name(project)} {args.version} on {args.host} ...", file=sys.stderr)
     try:
-        branch, commit = locate_start(gitlab, project, args.version, args.branch)
+        branch, version, commit = locate_start(gitlab, project, args.version, args.branch)
         if commit is None:
-            where = args.branch or f"release-{'.'.join(args.version.split('.')[:2])} or master"
-            print(f"mfn-cascade: no commit sets {short_name(project)} version {args.version} "
-                  f"on {where}", file=sys.stderr)
+            if args.branch or args.version == "latest":
+                where = args.branch or "master"
+            else:
+                where = f"release-{'.'.join(args.version.split('.')[:2])} or master"
+            if args.version == "latest":
+                wanted = "version"
+            elif args.version.count(".") >= 2:
+                wanted = f"version {args.version}"
+            else:
+                wanted = f"{args.version}.x version"
+            print(f"mfn-cascade: found no {wanted} of {short_name(project)} on {where}",
+                  file=sys.stderr)
             return 1
         root = Node(project, branch)
         root.state = FIXED
-        root.version = args.version
+        root.version = version
         root.package = gitlab.mmpackage(project, commit["id"])["name"]
         root.pipeline = gitlab.pipeline_summary(project, commit["id"])
         build_tree(gitlab, root, commit["committed_date"])
@@ -472,7 +576,8 @@ def main(argv=None):
         print(f"mfn-cascade: {err}", file=sys.stderr)
         return 1
     color = not args.no_color and sys.stdout.isatty() and "NO_COLOR" not in os.environ
-    print(render(root, Painter(color), not args.no_urls))
+    width = shutil.get_terminal_size((100, 24)).columns
+    print(render(root, Painter(color), not args.no_urls, args.verbose, width))
     return 0
 
 

@@ -2612,16 +2612,31 @@ or `mfn-lib-tcu` release. For each downstream project (`mfn-lib-core`,
 prints the first version built on that change and the status of its pipeline.
 
 ```text
-mfn-lib-toolchain                             release-1.46  1.46.1  success, published
-└── mfn-lib-tcu                               release-1.48  1.48.1  success, published; requires mepsfoundation-toolchain@1.46.1
-    └── mfn-lib-core                          release-3.20  3.20.5  running, 8/16 jobs done, not published; running: build-windows-386-release, build-windows-amd64-release; requires tcu@1.48.1
-        ├── mfn-lib-core-cpp                  release-3.20  -       not yet: latest 3.20.4 requires lib-core@3.20.4; head build success, published
-        ├── mfn-lib-core-nodejs               release-3.20  -       not yet: latest 3.20.4 requires lib-core@3.20.4; head build running, ...
-        │   └── mfn-lib-core-ts               release-3.20  -       waiting: lib-core-nodejs has no version with the change yet
-        │       └── mfn-lib-core-ts-examples  release-3.20  -       unknown: no mmpackage.json on release-3.20
-        └── mfn-lib-core-cs                   release-3.20  -       not yet: latest 3.20.4 requires lib-core@3.20.4; head build failed, 28/29 jobs done, not published; failed: update-downstream-1
-            └── mfn-lib-core-cs-examples      release-3.20  -       unknown: no mmpackage.json on release-3.20
+mfn-lib-toolchain                        release-1.46  1.46.1  published
+└─ mfn-lib-tcu                           release-1.48  1.48.1  published
+   └─ mfn-lib-core                       release-3.20  3.20.5  building, 9/16 jobs done
+      │  running: build-windows-amd64-release
+      │  https://gitlab.whqmeps.org/meps-foundation/mfn-lib-core/-/pipelines/168618
+      ├─ mfn-lib-core-cpp                release-3.20  -       not yet
+      │     latest is 3.20.4, which requires lib-core@3.20.4
+      ├─ mfn-lib-core-nodejs             release-3.20  -       not yet
+      │  │  latest is 3.20.4, which requires lib-core@3.20.4
+      │  │  head build running, 21/36 jobs done; failed: build-windows-amd64-release-nodejs-22, ...
+      │  │  https://gitlab.whqmeps.org/meps-foundation/mfn-lib-core-nodejs/-/pipelines/168584
+      │  └─ mfn-lib-core-ts              release-3.20  -       waiting on lib-core-nodejs
+      │     └─ mfn-lib-core-ts-examples  release-3.20  -       unknown
+      │           no mmpackage.json on release-3.20
+      └─ mfn-lib-core-cs                 release-3.20  -       not yet
+         │  latest is 3.20.4, which requires lib-core@3.20.4
+         │  head build failed, 28/29 jobs done; failed: update-downstream-1
+         │  https://gitlab.whqmeps.org/meps-foundation/mfn-lib-core-cs/-/pipelines/168580
+         └─ mfn-lib-core-cs-examples     release-3.20  -       unknown
+               no mmpackage.json on release-3.20
 ```
+
+Each project prints one line: its branch, the version that carries the
+change (`-` if none yet), and a status. The lines under it say why, and what
+its build is doing when the build has not published.
 
 ### Usage
 
@@ -2640,17 +2655,28 @@ python mfn-cascade.py [options] PROJECT VERSION
 `mfn-lib-<name>`), a repo name (`mfn-lib-core-cpp`), or a full GitLab path
 (`meps-foundation/mfn-lib-tcu`).
 
+`VERSION` takes one of these forms:
+
+| Form | Meaning |
+| ---- | ------- |
+| `1.46.1` | That exact version. Looked up on `release-1.46`, then `master`. |
+| `1.46` | The newest `1.46.x` version: the newest on `release-1.46`, or on `master` while `master` builds `1.46.x`. |
+| `latest` | The newest version on `master`. |
+
 | Option | Effect |
 | ------ | ------ |
-| `-b`, `--branch BRANCH` | Branch that built `VERSION`. Default: `release-X.Y` if it exists, then `master`. |
+| `-b`, `--branch BRANCH` | Branch that built `VERSION`. Default: `release-X.Y` if it exists, then `master`. With `latest`, the branch to take the newest version from. |
 | `--host HOST` | GitLab host. Default: `gitlab.whqmeps.org`. |
 | `--group GROUP` | Group for short project names. Default: `meps-foundation`. |
 | `--no-urls` | Omit the pipeline URL printed under each build that has not succeeded. |
+| `-v`, `--verbose` | Also show each version's upstream requirement, the jobs of builds that published, and every running and queued job. |
 | `--no-color` | Disable color. Color is also off when stdout is not a terminal or `NO_COLOR` is set. |
 | `-V`, `--version-info` | Print the version and exit. |
 
 ```sh
 mfn-cascade toolchain 1.46.1        # follow a toolchain release-branch build
+mfn-cascade toolchain 1.46          # the newest 1.46.x toolchain build
+mfn-cascade toolchain latest        # the newest toolchain build on master
 mfn-cascade tcu@1.49.18             # start from tcu on master
 mfn-cascade -b master core 3.21.23  # name the branch explicitly
 ```
@@ -2670,13 +2696,20 @@ mfn-cascade -b master core 3.21.23  # name the branch explicitly
 - The build status comes from that commit's pipeline, including its child
   pipeline. "Published" means the `publish-mm-packages` job succeeded.
 
-| State | Meaning |
-| ----- | ------- |
-| version shown | That version carries the change. The status is its pipeline. |
+| Status | Meaning |
+| ------ | ------- |
+| `published` | The version shown carries the change, and its build published it. |
+| `building, N/M jobs done` | The version shown carries the change, and its build is running. |
+| `failed`, `canceled` | The version shown carries the change, but its build did not publish it. |
 | `pending` | The project requires the new upstream version, but its own version has not been bumped. Usually the build is running. |
-| `not yet` | The project still requires an older upstream version. The head build shows whether a cascade is in progress. |
-| `waiting` | The upstream project has no version with the change yet. |
+| `not yet` | The project still requires an older upstream version. The "head build" line shows whether its current build has problems. |
+| `waiting on X` | Upstream project `X` has no version with the change yet. |
 | `unknown` | The project has no `mmpackage.json`, or does not pin a version of its upstream package. |
+
+The first four failed jobs print, followed by a count of the rest. Running jobs
+print when a build has three or fewer of them, and queued jobs only with
+`--verbose`, which also prints every failed job. The job count on the status line
+covers the rest. Lines wrap to the terminal width.
 
 ### Notes & caveats
 
