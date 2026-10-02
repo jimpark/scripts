@@ -32,6 +32,7 @@ for each are below.
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`inspect-nuget-package.py`](#inspect-nuget-packagepy) | List the .NET API symbols in a NuGet package, or check whether one exists. |
 | [`list-scripts.py`](#list-scriptspy) | Print this table in the terminal — find the script you need without opening the README. |
+| [`mfn-cascade.py`](#mfn-cascadepy) | Trace a Foundation library release down its GitLab build tree: which downstream version carries it, and its build status. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
 | [`script-runs.py`](#script-runspy) | Extract embedded runs of one Unicode script (with their neutral glue) from mixed-script text. |
@@ -2599,3 +2600,97 @@ arguments).
 
 **Requirements:** Python 3.9+ (standard library only; no dependencies) and the
 `az` CLI with the `azure-devops` extension on `PATH`.
+
+---
+
+## `mfn-cascade.py`
+
+Traces a **Foundation library release down its GitLab build tree**. Give it a
+project and the version that carries a change, such as an `mfn-lib-toolchain`
+or `mfn-lib-tcu` release. For each downstream project (`mfn-lib-core`,
+`mfn-lib-core-cpp`, `mfn-lib-core-cs`, `mfn-lib-core-nodejs`, and theirs), it
+prints the first version built on that change and the status of its pipeline.
+
+```text
+mfn-lib-toolchain                             release-1.46  1.46.1  success, published
+└── mfn-lib-tcu                               release-1.48  1.48.1  success, published; requires mepsfoundation-toolchain@1.46.1
+    └── mfn-lib-core                          release-3.20  3.20.5  running, 8/16 jobs done, not published; running: build-windows-386-release, build-windows-amd64-release; requires tcu@1.48.1
+        ├── mfn-lib-core-cpp                  release-3.20  -       not yet: latest 3.20.4 requires lib-core@3.20.4; head build success, published
+        ├── mfn-lib-core-nodejs               release-3.20  -       not yet: latest 3.20.4 requires lib-core@3.20.4; head build running, ...
+        │   └── mfn-lib-core-ts               release-3.20  -       waiting: lib-core-nodejs has no version with the change yet
+        │       └── mfn-lib-core-ts-examples  release-3.20  -       unknown: no mmpackage.json on release-3.20
+        └── mfn-lib-core-cs                   release-3.20  -       not yet: latest 3.20.4 requires lib-core@3.20.4; head build failed, 28/29 jobs done, not published; failed: update-downstream-1
+            └── mfn-lib-core-cs-examples      release-3.20  -       unknown: no mmpackage.json on release-3.20
+```
+
+### Usage
+
+```sh
+mfn-cascade [options] PROJECT VERSION
+mfn-cascade [options] PROJECT@VERSION
+```
+
+or invoke the script directly:
+
+```sh
+python mfn-cascade.py [options] PROJECT VERSION
+```
+
+`PROJECT` is a short name (`toolchain`, `tcu`, `core`, which become
+`mfn-lib-<name>`), a repo name (`mfn-lib-core-cpp`), or a full GitLab path
+(`meps-foundation/mfn-lib-tcu`).
+
+| Option | Effect |
+| ------ | ------ |
+| `-b`, `--branch BRANCH` | Branch that built `VERSION`. Default: `release-X.Y` if it exists, then `master`. |
+| `--host HOST` | GitLab host. Default: `gitlab.whqmeps.org`. |
+| `--group GROUP` | Group for short project names. Default: `meps-foundation`. |
+| `--no-urls` | Omit the pipeline URL printed under each build that has not succeeded. |
+| `--no-color` | Disable color. Color is also off when stdout is not a terminal or `NO_COLOR` is set. |
+| `-V`, `--version-info` | Print the version and exit. |
+
+```sh
+mfn-cascade toolchain 1.46.1        # follow a toolchain release-branch build
+mfn-cascade tcu@1.49.18             # start from tcu on master
+mfn-cascade -b master core 3.21.23  # name the branch explicitly
+```
+
+### How it works
+
+- Each project's `.project-manager.yaml` lists its downstream projects and the
+  branch to follow in each. The tree follows those links, so a new downstream
+  project appears without changing the script.
+- Each project's `mmpackage.json` holds its version and the version it requires
+  of its upstream package. When an upstream release lands, the cascade commits
+  `Require dependency 'pkg@x.y.z'`, then `Bump version to 'a.b.c'`.
+- For each downstream project, the script reads `mmpackage.json` at every
+  commit that changed it since the starting version was set. The first commit
+  that requires the traced upstream version or later is where the change
+  arrived. The first version set at or after that commit carries it.
+- The build status comes from that commit's pipeline, including its child
+  pipeline. "Published" means the `publish-mm-packages` job succeeded.
+
+| State | Meaning |
+| ----- | ------- |
+| version shown | That version carries the change. The status is its pipeline. |
+| `pending` | The project requires the new upstream version, but its own version has not been bumped. Usually the build is running. |
+| `not yet` | The project still requires an older upstream version. The head build shows whether a cascade is in progress. |
+| `waiting` | The upstream project has no version with the change yet. |
+| `unknown` | The project has no `mmpackage.json`, or does not pin a version of its upstream package. |
+
+### Notes & caveats
+
+- A project that pins a stale upstream version and does not take part in the
+  cascade shows `not yet` indefinitely. On `master`, `mfn-lib-core-ts` pins
+  `lib-core-nodejs@3.17.2`.
+- A failed trigger job (`update-downstream-1`, which starts a downstream
+  project's pipeline) fails the pipeline even when every build job passed. The
+  failed job names show which kind of failure it is.
+- Sibling projects are traced in parallel. A full tree takes 15 to 20 seconds.
+
+Exit status: `0` the tree was traced · `1` the starting version was not found,
+or a `glab` call failed · `2` usage error (bad or missing arguments).
+
+**Requirements:** Python 3.9+ (standard library only; no dependencies) and the
+`glab` CLI on `PATH`, logged in to the GitLab host (`glab auth login --hostname
+gitlab.whqmeps.org`).
