@@ -29,6 +29,7 @@ for each are below.
 | [`git-grep.py`](#git-greppy) | Interactively `git grep`, browse the hits in a folder tree, and open one at its line in your editor. |
 | [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex or glob in a folder tree and open it in your editor. |
 | [`git-prune.py`](#git-prunepy) | Delete local Git branches that no longer exist on a remote. |
+| [`gl-open.py`](#gl-openpy) | Open a GitLab issue or merge request in the browser by its number. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`inspect-nuget-package.py`](#inspect-nuget-packagepy) | List the .NET API symbols in a NuGet package, or check whether one exists. |
 | [`list-scripts.py`](#list-scriptspy) | Print this table in the terminal — find the script you need without opening the README. |
@@ -2600,6 +2601,106 @@ arguments).
 
 **Requirements:** Python 3.9+ (standard library only; no dependencies) and the
 `az` CLI with the `azure-devops` extension on `PATH`.
+
+---
+
+## `gl-open.py`
+
+Opens a **GitLab issue or merge request** by its number. It looks the number up
+with the `glab` CLI, prints the item's reference, title, state, and URL, and
+opens the URL in your default browser.
+
+GitLab numbers issues and merge requests per project, so each number needs a
+project. Inside a checkout of a GitLab project, the script reads the project
+from the git remote, and `gl-open mr 17` is enough.
+
+### Usage
+
+```sh
+gl-open [options] ID [ID ...]
+```
+
+or invoke the script directly:
+
+```sh
+python gl-open.py [options] ID [ID ...]
+```
+
+Each `ID` takes one of these forms:
+
+| Form | Meaning |
+| ---- | ------- |
+| `#42` | Issue. |
+| `!17` | Merge request. |
+| `issue 42` | Issue. |
+| `mr 17` | Merge request. |
+| `42` | Either. Opens whichever exists. If both exist, lists both and opens neither. |
+| `group/project#42` | Issue in that project. |
+| `group/project!17` | Merge request in that project. |
+
+| Option | Effect |
+| ------ | ------ |
+| `-p`, `--project PROJECT` | The `group/project` for IDs that don't name one. |
+| `-n`, `--print` | Print the URLs without opening the browser. |
+| `-V`, `--version` | Print the version and exit. |
+
+```sh
+gl-open '#42'                         # open an issue in the current project
+gl-open mr 17                         # open a merge request
+gl-open -n issue 42                   # print the URL only
+gl-open 'meps-foundation/mfn-idl!1'   # open an MR in another project
+gl-open -p meps-foundation/mfn-idl 1  # same project, as an option
+gl-open -n '!17' | pbcopy             # copy just the URL
+```
+
+### Which project
+
+An ID that names its project (`group/project#42`) uses it. Otherwise the first
+of these that applies supplies the project:
+
+1. `-p`/`--project`.
+2. The current directory's git remote, if it points at the configured host.
+   `origin` wins; otherwise the first remote on that host.
+3. `project` in the config file.
+
+### Configuration
+
+The GitLab host is `host` in the `[gitlab]` section of `gl-open.ini`, beside the
+script. The file is gitignored. The first run creates it:
+
+```ini
+[gitlab]
+host = gitlab.whqmeps.org
+# project = group/project
+```
+
+Uncomment `project` to set a default for runs outside a GitLab checkout.
+
+### Notes & caveats
+
+- **Quote `#` and `!` in bash and PowerShell.** Both shells read `#42` after a
+  space as a comment, so the script receives no argument. Interactive bash also
+  expands `!17` from its history. Write `'#42'` and `'!17'`, or use the word
+  forms `issue 42` and `mr 17`. cmd.exe passes both prefixes through unquoted.
+- **A bare number queries both kinds.** Issues and merge requests have separate
+  number sequences in each project, so a bare number often matches both. When
+  it does, the script lists both and exits `1`. Rerun with a prefix to pick one.
+- A misspelled project stops the run with "project not found" rather than
+  reporting each ID as missing.
+- Lookups for several IDs run in parallel.
+- When stdout is a terminal, each item prints as a title line with the URL
+  below it. When stdout is piped, only the URLs print, one per line. Errors
+  and the ambiguous-number listing go to stderr.
+- `glab` must be logged in to the host (`glab auth login --hostname
+  gitlab.whqmeps.org`). Any `glab` error other than "not found" stops the run
+  and prints the `glab` message.
+
+Exit status: `0` every ID resolved · `1` an ID was not found or was ambiguous,
+no project applied, `glab` failed, or the config file is invalid · `2` usage
+error (bad or missing arguments).
+
+**Requirements:** Python 3.9+ (standard library only; no dependencies) and the
+`glab` CLI on `PATH`.
 
 ---
 
