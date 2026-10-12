@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""ado-open.py — Open an Azure DevOps work item or pull request by its number.
+"""ado-open.py — Open an Azure DevOps work item, pull request, or build by its number.
 
-Give it a bug or PBI number, or a pull request number, and it looks the item up
+Give it a bug or PBI number, a pull request number, or a build ID, and it looks the item up
 with the `az` CLI, prints its title and URL, and opens the URL in your browser:
 
     ado-open '#645265'        # work item (bug, PBI, task, ...)
     ado-open '!176642'        # pull request
     ado-open wi 645265        # same as #645265, no quoting needed
     ado-open pr 176642        # same as !176642, no quoting needed
-    ado-open 645265           # bare number: tries both
+    ado-open build 992246     # pipeline build (the buildId in its URL)
+    ado-open 645265           # bare number: tries work item and PR
 
 WHY QUOTE # AND !
 -----------------
@@ -16,12 +17,14 @@ In bash and PowerShell, `#` after a space starts a comment, so an unquoted
 `ado-open #1234` passes no argument at all. Interactive bash also expands `!1234`
 from its history. Quote those forms, or use the word forms (`wi`, `bug`, `pbi`,
 `pr`), which need no quoting in any shell. cmd.exe passes both through as-is.
+Builds have only the word form, `build`.
 
 A BARE NUMBER
 -------------
 Work item and pull request IDs share one number range, so a bare number is
 looked up as both. If exactly one exists, it opens. If both exist, both are
-listed and neither opens; rerun with a prefix to pick one.
+listed and neither opens; rerun with a prefix to pick one. Build IDs use a
+separate number range, so a bare number is never looked up as a build.
 
 WHERE THE URL COMES FROM
 ------------------------
@@ -33,7 +36,9 @@ gitignored; the first run creates it with the default project URL:
 
 The organization is the part before the project. `az` queries that organization,
 and the item's own project replaces the configured one in the URL, so an item
-from another project in the same organization still resolves.
+from another project in the same organization still resolves. Builds are the
+exception: the build API needs the project, so `ado-open build` finds only
+builds in the configured project.
 
 Usage:
     ado-open.py [-n] ID [ID ...]
@@ -56,7 +61,7 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 CONFIG_PATH = Path(__file__).resolve().parent / "ado-open.ini"
 DEFAULT_BASE_URL = "https://dev.azure.com/whqmeps/MEPS"
@@ -70,18 +75,21 @@ base_url = {0}
 
 WORK_ITEM = "wi"
 PULL_REQUEST = "pr"
+BUILD = "build"
 EITHER = "either"
 
 # Words accepted before a number, and the kind each one selects.
 KIND_WORDS = {
     "wi": WORK_ITEM, "bug": WORK_ITEM, "pbi": WORK_ITEM,
     "pr": PULL_REQUEST,
+    "build": BUILD,
 }
 PREFIXES = {"#": WORK_ITEM, "!": PULL_REQUEST}
 ID_RE = re.compile(r"^([#!]?)(\d+)$")
 
 # TF401232: work item does not exist. TF401180: pull request not found.
-NOT_FOUND_CODES = ("TF401232", "TF401180")
+# The build API returns no TF code, only the message.
+NOT_FOUND_MARKERS = ("TF401232", "TF401180", "could not be found")
 
 
 class UsageError(Exception):
@@ -158,7 +166,7 @@ def run_az(az, args):
                           text=True, encoding="utf-8", errors="replace")
     if proc.returncode == 0:
         return json.loads(proc.stdout)
-    if any(code in proc.stderr for code in NOT_FOUND_CODES):
+    if any(marker in proc.stderr for marker in NOT_FOUND_MARKERS):
         return None
     message = proc.stderr.strip() or "az exited with status {0}".format(
         proc.returncode)
@@ -199,11 +207,36 @@ def lookup_pull_request(az, org_url, number):
     }
 
 
+def lookup_build(az, org_url, project, number):
+    """Return a result dict for a pipeline build, or None if it does not exist."""
+    data = run_az(az, ["pipelines", "build", "show", "--id", str(number),
+                       "--org", org_url, "--project", project])
+    if data is None:
+        return None
+    branch = (data.get("sourceBranch") or "").removeprefix("refs/heads/")
+    title = data.get("buildNumber", "")
+    if branch:
+        title += " on " + branch
+    return {
+        "label": "Build {0} ({1})".format(
+            number, data.get("definition", {}).get("name", "")),
+        "title": title,
+        # result is empty until the build completes.
+        "state": data.get("result") or data.get("status") or "",
+        "url": "{0}/{1}/_build/results?buildId={2}".format(
+            org_url, urllib.parse.quote(data.get("project", {}).get("name", project)),
+            number),
+    }
+
+
 LOOKUPS = {WORK_ITEM: lookup_work_item, PULL_REQUEST: lookup_pull_request}
 
 
-def resolve(az, org_url, kind, number):
+def resolve(az, org_url, project, kind, number):
     """Return the list of items that match one target (empty if none)."""
+    if kind == BUILD:
+        found = lookup_build(az, org_url, project, number)
+        return [found] if found is not None else []
     kinds = (WORK_ITEM, PULL_REQUEST) if kind == EITHER else (kind,)
     with ThreadPoolExecutor(max_workers=len(kinds)) as pool:
         found = list(pool.map(lambda k: LOOKUPS[k](az, org_url, number), kinds))
@@ -230,6 +263,8 @@ def target_name(kind, number):
         return "work item {0}".format(number)
     if kind == PULL_REQUEST:
         return "pull request {0}".format(number)
+    if kind == BUILD:
+        return "build {0}".format(number)
     return "{0}".format(number)
 
 
@@ -240,7 +275,7 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(
         prog="ado-open",
-        description="Look up Azure DevOps work items and pull requests by "
+        description="Look up Azure DevOps work items, pull requests, and builds by "
                     "number with the az CLI, print their URLs, and open them "
                     "in the browser.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -250,8 +285,10 @@ def main(argv=None):
             "  !1234          pull request\n"
             "  wi 1234        work item; 'bug' and 'pbi' are aliases for 'wi'\n"
             "  pr 1234        pull request\n"
-            "  1234           either; opens the one that exists, and lists\n"
-            "                 both without opening if both exist\n"
+            "  build 1234     pipeline build in the configured project\n"
+            "  1234           work item or pull request; opens the one that\n"
+            "                 exists, and lists both without opening if both\n"
+            "                 exist\n"
             "\n"
             "quoting:\n"
             "  bash and PowerShell treat #1234 as a comment, and interactive\n"
@@ -261,6 +298,7 @@ def main(argv=None):
             "examples:\n"
             "  ado-open '#645265'           open a work item\n"
             "  ado-open pr 176642           open a pull request\n"
+            "  ado-open build 992246        open a pipeline build\n"
             "  ado-open -n bug 645265       print the URL, don't open it\n"
             "  ado-open '#645265' '!176642' open several at once\n"
             "\n"
@@ -296,10 +334,10 @@ def main(argv=None):
         return 1
 
     try:
-        org_url, _ = split_base_url(load_base_url())
+        org_url, project = split_base_url(load_base_url())
         with ThreadPoolExecutor(max_workers=min(8, len(targets))) as pool:
             results = list(pool.map(
-                lambda t: resolve(az, org_url, t[0], t[1]), targets))
+                lambda t: resolve(az, org_url, project, t[0], t[1]), targets))
     except AzError as exc:
         sys.stderr.write("ado-open: " + str(exc) + "\n")
         return 1

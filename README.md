@@ -13,7 +13,7 @@ for each are below.
 
 | Script | What it does |
 | ------ | ------------ |
-| [`ado-open.py`](#ado-openpy) | Open an Azure DevOps work item or pull request in the browser by its number. |
+| [`ado-open.py`](#ado-openpy) | Open an Azure DevOps work item, pull request, or pipeline build in the browser by its number. |
 | [`backport.py`](#backportpy) | Cherry-pick one author's commits from a source branch onto a target branch. |
 | [`baseconv.py`](#baseconvpy) | Convert a value between binary, decimal, octal, hex, and base64. |
 | [`bedrock-copilot.py`](#bedrock-copilotpy) | Launch the GitHub Copilot CLI against a model on AWS Bedrock, with model + effort pickers. |
@@ -2520,7 +2520,7 @@ on `PATH`.
 
 ## `ado-open.py`
 
-Opens an **Azure DevOps work item or pull request** by its number. It looks the
+Opens an **Azure DevOps work item, pull request, or pipeline build** by its number. It looks the
 number up with the `az` CLI, prints the item's type, title, state, and URL, and
 opens the URL in your default browser.
 
@@ -2548,7 +2548,8 @@ Each `ID` takes one of these forms:
 | `!1234` | Pull request. |
 | `wi 1234` | Work item. `bug` and `pbi` are aliases for `wi`. |
 | `pr 1234` | Pull request. |
-| `1234` | Either. Opens whichever exists. If both exist, lists both and opens neither. |
+| `build 1234` | Pipeline build: the `buildId` in a `_build/results` URL. |
+| `1234` | Work item or pull request. Opens whichever exists. If both exist, lists both and opens neither. Never a build. |
 
 | Option | Effect |
 | ------ | ------ |
@@ -2558,6 +2559,7 @@ Each `ID` takes one of these forms:
 ```sh
 ado-open '#645265'            # open a work item
 ado-open pr 176642            # open a pull request
+ado-open build 992246         # open a pipeline build
 ado-open -n bug 645265        # print the URL only
 ado-open '#645265' '!176642'  # open several at once
 ado-open -n '!176642' | clip  # copy just the URL
@@ -2575,7 +2577,8 @@ base_url = https://dev.azure.com/whqmeps/MEPS
 
 `az` queries the organization part of that URL. The URL the script prints uses
 the item's own project, so an item from another project in the same
-organization still resolves.
+organization still resolves. Builds are the exception: the build API needs the
+project, so `ado-open build` finds only builds in the configured project.
 
 ### Notes & caveats
 
