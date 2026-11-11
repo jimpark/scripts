@@ -34,6 +34,7 @@ for each are below.
 | [`inspect-nuget-package.py`](#inspect-nuget-packagepy) | List the .NET API symbols in a NuGet package, or check whether one exists. |
 | [`list-scripts.py`](#list-scriptspy) | Print this table in the terminal — find the script you need without opening the README. |
 | [`mfn-cascade.py`](#mfn-cascadepy) | Trace a Foundation library release down its GitLab build tree: which downstream version carries it, and its build status. |
+| [`pfx-info.py`](#pfx-infopy) | Print a PFX (PKCS#12) file's certificates, chain, private key, and how it is encrypted. |
 | [`rapid-mlx-copilot.py`](#rapid-mlx-copilotpy) | Pick a local MLX model your Mac can run and launch the GitHub Copilot CLI against it. |
 | [`rtf-runs.py`](#rtf-runspy) | Segment RTF body text into runs and report the language/character set of each. |
 | [`script-runs.py`](#script-runspy) | Extract embedded runs of one Unicode script (with their neutral glue) from mixed-script text. |
@@ -2831,3 +2832,52 @@ or a `glab` call failed · `2` usage error (bad or missing arguments).
 **Requirements:** Python 3.9+ (standard library only; no dependencies) and the
 `glab` CLI on `PATH`, logged in to the GitLab host (`glab auth login --hostname
 gitlab.whqmeps.org`).
+
+---
+
+## `pfx-info.py`
+
+Prints what is inside a **PFX / PKCS#12** file (`.pfx`, `.p12`): every
+certificate, the chain order, the private key, and how the file is protected.
+
+- **Protection:** the MAC algorithm and iteration count, and the encryption
+  scheme for the certificates and for the private key (for example PBES2 with
+  AES-256-CBC, or 3DES). Schemes that OpenSSL 3 rejects without `-legacy`, such
+  as RC2-40, are flagged.
+- **Private key:** type and size, and whether it matches the leaf certificate.
+- **Each certificate,** leaf first, then each issuer in turn: subject, issuer,
+  friendly name, serial, validity with days until expiry, signature algorithm,
+  public key, SHA-1 thumbprint (the value Windows shows), SHA-256 fingerprint,
+  and extensions (CA flag, key usage, extended key usage, subject alternative
+  names, key identifiers, CRL and OCSP locations, policies).
+- **Issued by:** which certificate in the file signed this one, with the
+  signature checked, or "not in this file".
+
+### Usage
+
+```sh
+pfx-info [-p PASSWORD] [--format {human,json}] FILE
+```
+
+or invoke the script directly:
+
+```sh
+uv run pfx-info.py [-p PASSWORD] [--format {human,json}] FILE
+```
+
+- The password comes from `-p`, then `$PFX_PASSWORD`. With neither, the script
+  tries no password, then an empty one, then prompts if stdin is a terminal.
+- `--format json` prints the same data as JSON for scripting.
+
+```sh
+pfx-info cert.pfx
+PFX_PASSWORD=secret pfx-info --format json cert.p12
+```
+
+### Notes & caveats
+
+- **No system `openssl` needed.** The `cryptography` package bundles its own
+  OpenSSL, and `uv` installs it from the script's inline dependency.
+- The chain check confirms signatures between certificates in the file. It does
+  not check revocation or trust in the system root store.
+- **Requirements:** Python 3.9+ and [`uv`](https://docs.astral.sh/uv/).
