@@ -29,6 +29,7 @@ for each are below.
 | [`git-grep.py`](#git-greppy) | Interactively `git grep`, browse the hits in a folder tree, and open one at its line in your editor. |
 | [`git-open.py`](#git-openpy) | Interactively find a tracked file by regex or glob in a folder tree and open it in your editor. |
 | [`git-prune.py`](#git-prunepy) | Delete local Git branches that no longer exist on a remote. |
+| [`git-worktree-prune.py`](#git-worktree-prunepy) | Remove Git worktrees whose branches are already merged, after showing the space they free. |
 | [`gl-open.py`](#gl-openpy) | Open a GitLab issue or merge request in the browser by its number. |
 | [`html-info.py`](#html-infopy) | Print useful basic information about an HTML, XML, or XHTML document. |
 | [`inspect-nuget-package.py`](#inspect-nuget-packagepy) | List the .NET API symbols in a NuGet package, or check whether one exists. |
@@ -535,6 +536,88 @@ correctly deleted without needing `--force`.
 - If a deletion fails, the remaining branches are still processed and the script
   exits with a non-zero status.
 - **Requirements:** Python 3.6+ (standard library only) and Git on `PATH`.
+
+---
+
+## `git-worktree-prune.py`
+
+Removes the linked Git worktrees whose branches are already merged, and deletes
+those branches. It scans a folder (the current directory by default): the
+folder itself, if it is a repo, and each immediate subfolder that is one.
+
+For each repo it fetches `origin`, lists the linked worktrees, and checks each
+worktree's branch. The main worktree is never removed. It then prints the plan:
+each worktree it will remove with its size and why it counts as merged, and
+each merged worktree it keeps with the reason. It reports the total space to
+reclaim and asks for a `y` before removing anything.
+
+### Usage
+
+```sh
+git-worktree-prune [FOLDER]
+```
+
+or invoke the script directly:
+
+```sh
+python git-worktree-prune.py [FOLDER]
+```
+
+| Option | Effect |
+| ------ | ------ |
+| `-n`, `--dry-run` | Print the plan and the space to reclaim, then stop. |
+| `--force` | Also remove merged worktrees with uncommitted or untracked changes. |
+| `--yes` | Skip the confirmation prompt. |
+| `--no-fetch` | Check against the remote-tracking branches as they are. |
+| `--no-server` | Skip the `az`/`glab`/`gh` PR lookups and use the Git check only. |
+| `-j N`, `--jobs N` | Check N repos in parallel (default 8). |
+
+```sh
+git-worktree-prune --dry-run ~/MEPS/master/foundation-workspace
+git-worktree-prune --no-server
+git-worktree-prune --force --yes
+```
+
+```
+mfn-svc-corpus
+  remove  .claude/worktrees/JP/716632-raw-put-route     412.3 MB  in origin/master, PR 186247 merged
+  keep    .claude/worktrees/JP/716632-download-url                uncommitted or untracked changes (merged: PR 186028 merged)
+  keep    .claude/worktrees/JP/reject-untrainable-snapshot        no commits of its own
+
+1 worktree(s) to remove, 412.3 MB to reclaim.
+Remove these worktrees and delete their branches? (y/n):
+```
+
+### How "merged" is decided
+
+A branch counts as merged if **either** check says so:
+
+1. **Git:** the branch is in `origin`'s default branch (`origin/HEAD`, else
+   `origin/main`, `origin/master`, or `origin/develop`). This is the
+   [`git-prune.py`](#how-merged-is-decided) check, so squash and rebase merges
+   count.
+2. **Server:** the PR host reports a completed PR from the branch, and the PR's
+   last source commit contains the local branch tip. The host comes from the
+   `origin` URL: Azure DevOps uses `az`, github.com uses `gh`, and any other host
+   is treated as GitLab and uses `glab`. A branch with commits made after its PR
+   merged is not counted.
+
+### Notes & caveats
+
+- A merged worktree is **kept** if it has uncommitted or untracked changes
+  (`--force` removes it anyway), is locked, or holds the current directory.
+- A branch with no commits of its own is kept, because the Git check calls it
+  "merged" only because it never diverged. The script decides this from the
+  branch reflog: the tip is still the commit the branch was created at. With no
+  reflog, a branch that has no upstream and sits on the default branch counts
+  as never committed, unless a merged PR names it.
+- Detached worktrees and worktrees whose directory is missing are listed and
+  kept. Run `git worktree prune` for the missing ones.
+- A missing CLI or a failed PR lookup prints a warning, and the Git check still
+  applies.
+- Space is the disk usage of the worktree directory, counting hard links once.
+- **Requirements:** Python 3.9+ (standard library only) and Git on `PATH`.
+  `az`, `glab`, or `gh`, signed in, for the PR check.
 
 ---
 
