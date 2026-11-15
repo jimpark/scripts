@@ -4,7 +4,9 @@
 Prunes stale remote-tracking references (git fetch --prune), then compares the
 local branches against the branches still present on the remote. Any local
 branch with no matching remote branch is listed and, after an interactive y/n
-confirmation, deleted. The branch currently checked out is always skipped.
+confirmation, deleted. The branch currently checked out is always skipped,
+and so is any branch checked out in a linked worktree: Git refuses to delete
+those, and git-worktree-prune.py removes the worktree and the branch together.
 
 Run this from inside the Git repository you want to clean up.
 
@@ -43,7 +45,7 @@ import argparse
 import subprocess
 import sys
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def git(*args, check=True, capture=True):
@@ -66,6 +68,14 @@ def git_lines(*args):
 def is_inside_work_tree() -> bool:
     result = git("rev-parse", "--is-inside-work-tree", check=False)
     return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def worktree_branches() -> set:
+    """Return the short names of branches checked out in any worktree."""
+    out = git("worktree", "list", "--porcelain", check=False).stdout or ""
+    prefix = "branch refs/heads/"
+    return {line[len(prefix):] for line in out.splitlines()
+            if line.startswith(prefix)}
 
 
 def upstream_of(ref: str):
@@ -195,16 +205,35 @@ def main(argv=None) -> int:
     # Branch to test merges against: --into, else the current branch.
     target = args.into if args.into else "HEAD"
 
-    candidates = []
+    # Git refuses to delete a branch checked out in a worktree, so leave those
+    # to git-worktree-prune, which removes the worktree and the branch together.
+    in_worktree = worktree_branches()
+
+    candidates, worktree_skipped = [], []
     for branch in local_branches:
         if branch == current:
             print(f"Skipping current branch: {branch}")
             continue
-        if branch not in remote_branches:
+        if branch in remote_branches:
+            continue
+        if branch in in_worktree:
+            worktree_skipped.append(branch)
+        else:
             candidates.append(branch)
 
+    if worktree_skipped:
+        print(f"Skipping {len(worktree_skipped)} branch(es) checked out in a "
+              f"worktree (git-worktree-prune removes these):")
+        for branch in worktree_skipped:
+            print(f"  - {branch}")
+        print()
+
     if not candidates:
-        print(f"No branches to delete. All local branches exist on '{args.remote}'.")
+        if worktree_skipped:
+            print("No other branches to delete.")
+        else:
+            print(f"No branches to delete. All local branches exist on "
+                  f"'{args.remote}'.")
         return 0
 
     # The merge check uses the *local* target branch, and 'git fetch' does not

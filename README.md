@@ -457,7 +457,10 @@ It runs `git fetch --prune`, finds local branches that no longer have a
 counterpart on the remote, and — for each one whose work is **already merged
 into the target branch** — deletes it **after you confirm** with `y`. Branches
 that aren't merged yet are listed and kept. The branch you currently have
-checked out is always skipped.
+checked out is always skipped, and so is any branch checked out in a linked
+worktree: Git refuses to delete those, so the script lists them and leaves them
+to [`git-worktree-prune.py`](#git-worktree-prunepy), which removes the worktree
+and its branch together.
 
 Crucially, "merged" includes **squash- and rebase-merged** branches, not just
 classic merge commits (see [How "merged" is decided](#how-merged-is-decided)).
