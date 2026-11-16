@@ -4,3 +4,4 @@ __pycache__/
 .git-open-config
 ado-open.ini
 gl-open.ini
+.claude/settings.local.json
