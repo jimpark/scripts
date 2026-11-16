@@ -137,8 +137,17 @@ class ServerError(Exception):
 
 
 def run_json(cmd):
-    proc = subprocess.run(cmd, text=True, encoding="utf-8", errors="replace",
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Resolve the full path: on Windows az is az.cmd, which CreateProcess
+    # will not find from a bare "az" but will run when given its path.
+    exe = shutil.which(cmd[0])
+    if not exe:
+        raise ServerError(f"'{cmd[0]}' not found")
+    try:
+        proc = subprocess.run([exe, *cmd[1:]], text=True, encoding="utf-8",
+                              errors="replace", stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise ServerError(f"cannot run '{cmd[0]}': {exc}")
     if proc.returncode != 0:
         message = proc.stderr.strip() or proc.stdout.strip() or \
             f"{cmd[0]} exited with status {proc.returncode}"
